@@ -66,8 +66,7 @@ python main.py
 
 ### What Carlitos can do?
 
-- Handle the calendar
-- Handle the emails
+Idk... many things. All the possible actions related to Calendar, Gmail, Slack, Notion, Linear and GitHub.
 
 ### What Carlitos will be able to do?
 
@@ -75,7 +74,7 @@ Imagination is the limit.
 
 ### How to create the correct MCP configuration file?
 
-Better if you ask Filippo... or check out this video. In order to quickly integrate with all the providers, the easiest and quickest solution it's to use Composio. Composio exposes a MCP server for each of the providers.
+Better if you ask Filippo... In order to quickly integrate with all the providers, the easiest and quickest solution it's to use Composio. Composio exposes a MCP server for each of the providers.
 
 ### Which integrations does Carlitos support right now?
 
