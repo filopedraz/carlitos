@@ -1,15 +1,16 @@
 import os
 from typing import Dict, List, Any, Optional
-from openai import OpenAI
-import json
 import logging
-import uvicorn
-
-# Import MCP-specific modules
-from mcp.server.fastmcp import FastMCP
+import traceback
+import sys
+import json
+from fastmcp import FastMCP
+from openai import OpenAI
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                   handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger("image_server")
 
 class OpenAIImageGenServer:
@@ -80,15 +81,25 @@ async def generate_image(prompt: str, size: str = "1024x1024", n: int = 1,
         referenced_image_ids: IDs of images to reference for context (not used by gpt-image-1)
     """
     logger.info(f"Tool 'generate_image' called with prompt: '{prompt}', size: {size}, n: {n}, transparent: {transparent_background}")
-    # Note: gpt-image-1 (DALL-E 3 via API) currently only supports n=1.
-    # For simplicity, we'll pass n but OpenAI API might ignore or error if > 1 for this model.
-    # Referenced_image_ids are also not directly used by gpt-image-1 in the same way as some other models.
-    result = server.generate_image_4o(
-        prompt=prompt,
-        size=size,
-        n=n, # For gpt-image-1 (DALL-E 3 quality), n must be 1.
-        transparent_background=transparent_background,
-        referenced_image_ids=referenced_image_ids # This param is for other models/contexts
-    )
-    logger.info(f"Tool 'generate_image' received from server: {result}")
-    return result
+    try:
+        # Note: gpt-image-1 (DALL-E 3 via API) currently only supports n=1.
+        result = server.generate_image_4o(
+            prompt=prompt,
+            size=size,
+            n=n, # For gpt-image-1 (DALL-E 3 quality), n must be 1.
+            transparent_background=transparent_background,
+            referenced_image_ids=referenced_image_ids # This param is for other models/contexts
+        )
+        logger.info(f"Tool 'generate_image' received from server: {json.dumps(result)}")
+        return result
+    except Exception as e:
+        error_traceback = traceback.format_exc()
+        logger.error(f"Unexpected error in generate_image tool: {str(e)}")
+        logger.error(f"Traceback: {error_traceback}")
+        return {
+            "success": False,
+            "error": f"Tool error: {str(e)}"
+        }
+
+if __name__ == "__main__":
+    mcp.run(transport="sse", host="0.0.0.0", port=8000)
