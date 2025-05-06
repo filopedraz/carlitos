@@ -3,11 +3,14 @@ import asyncio
 import logging
 import sys
 import signal
+import json
 
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.prompt import Prompt
+from rich.panel import Panel
+from rich.syntax import Syntax
 
 from carlitos.mega_agent import MegaAgent
 from carlitos.config import load_config
@@ -126,10 +129,45 @@ async def chat_loop(agent, debug=False):
                     # Process the chat message
                     response = await agent.chat(user_input)
                     
-                    # In debug mode, check if there are tool results
+                    # In debug mode, check if there are tool results and display them
                     if debug and hasattr(agent, "_last_tool_results"):
                         console.print("[bold yellow]Debug - Raw Tool Results:[/bold yellow]")
-                        console.print(agent._last_tool_results)
+                        
+                        # Try to parse as JSON for nicer formatting
+                        try:
+                            if isinstance(agent._last_tool_results, str) and agent._last_tool_results.startswith("{"):
+                                result_json = json.loads(agent._last_tool_results)
+                                formatted_json = json.dumps(result_json, indent=2)
+                                console.print(Syntax(formatted_json, "json", theme="monokai", word_wrap=True))
+                            elif isinstance(agent._last_tool_results, str) and agent._last_tool_results.startswith("EXECUTION SUMMARY"):
+                                # Split into sections for better readability
+                                parts = agent._last_tool_results.split("\n\nRESULTS:\n")
+                                if len(parts) == 2:
+                                    console.print(Panel(parts[0], title="Execution Summary", border_style="yellow"))
+                                    console.print(Panel(parts[1][:1000] + "..." if len(parts[1]) > 1000 else parts[1], 
+                                                       title="Results", border_style="green"))
+                                else:
+                                    console.print(agent._last_tool_results)
+                            else:
+                                console.print(agent._last_tool_results)
+                        except json.JSONDecodeError:
+                            console.print(agent._last_tool_results)
+                        
+                        # If using a sub-agent, try to get its tool results too
+                        if hasattr(agent, "_current_agent_type") and agent._current_agent_type:
+                            if agent._current_agent_type in agent.sub_agents:
+                                sub_agent = agent.sub_agents[agent._current_agent_type]
+                                if hasattr(sub_agent, "_last_tool_results") and sub_agent._last_tool_results:
+                                    console.print(f"[bold magenta]Debug - {agent._current_agent_type} Sub-Agent Tool Results:[/bold magenta]")
+                                    try:
+                                        if isinstance(sub_agent._last_tool_results, str) and sub_agent._last_tool_results.startswith("{"):
+                                            result_json = json.loads(sub_agent._last_tool_results)
+                                            formatted_json = json.dumps(result_json, indent=2)
+                                            console.print(Syntax(formatted_json, "json", theme="monokai", word_wrap=True))
+                                        else:
+                                            console.print(sub_agent._last_tool_results)
+                                    except json.JSONDecodeError:
+                                        console.print(sub_agent._last_tool_results)
                     
                     # Display which agent was used
                     agent_info = ""

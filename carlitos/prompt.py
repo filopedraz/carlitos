@@ -158,10 +158,10 @@ Only select integrations that are directly relevant to the request.
 If none of the integrations are relevant, return an empty list.
 
 Respond in the following JSON format:
-{
+{{
     "reasoning": "Your analysis of why certain integrations are needed",
     "integrations": ["integration1", "integration2"]
-}
+}}
 """
 
 # Special instruction for no data responses

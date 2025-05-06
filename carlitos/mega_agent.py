@@ -1,6 +1,7 @@
 import logging
 import json
 from typing import Dict, NamedTuple
+import re
 
 from carlitos.agent import AgenticMCPAgent
 from carlitos.config import CarlitosConfig, ServerConfig
@@ -259,7 +260,7 @@ class MegaAgent:
         # Get chat history for context
         formatted_history = self._format_chat_history()
             
-        # Create the prompt using the constant from prompt.py
+        # Create the prompt using the constant from prompt.py with matching parameter names
         prompt = ROUTING_PROMPT.format(
             formatted_history=formatted_history,
             message=message,
@@ -345,7 +346,6 @@ class MegaAgent:
         """
         # Remove markdown code blocks (```json ... ```)
         pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
-        import re
         match = re.search(pattern, response)
         if match:
             return match.group(1).strip()
