@@ -24,9 +24,12 @@ console = Console()
 
 app = typer.Typer(help="Carlitos - An agentic MCP client")
 
+# Default configuration path
+DEFAULT_CONFIG_PATH = "./.cursor/mcp.json"
+
 
 def run_chat(
-    config_path: str = "./.cursor/mcp.json",
+    config_path: str = DEFAULT_CONFIG_PATH,
     verbose: bool = False,
     debug: bool = False,
 ):
@@ -75,7 +78,7 @@ def run_chat(
 @app.command()
 def chat(
     config_path: str = typer.Option(
-        "./.cursor/mcp.json", 
+        DEFAULT_CONFIG_PATH, 
         "--config", 
         "-c", 
         help="Path to MCP configuration file"

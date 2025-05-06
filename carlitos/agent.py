@@ -1,6 +1,6 @@
 import logging
 import json
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Callable, Awaitable
 
 from mcp import ClientSession, Tool
 from mcp.client.stdio import stdio_client
@@ -9,6 +9,7 @@ from rich.progress import Progress
 
 from carlitos.config import CarlitosConfig, ServerConfig, get_server_params
 from carlitos.llm import AgenticLLMToolSelector
+from carlitos.prompt import NO_DATA_INSTRUCTION
 
 log = logging.getLogger("carlitos.agent")
 
@@ -70,18 +71,8 @@ class AgenticMCPAgent:
         Returns:
             Agent response
         """
-        # Discover tools
-        self.all_tools = await self._discover_tools()
-        if not self.all_tools:
-            return "No tools available. Please check your MCP server configuration."
-        
-        # Process the query
-        try:
-            result = await self._process_chat_message(query)
-            return result
-        except Exception as e:
-            log.error(f"Error in query processing: {e}", exc_info=True)
-            return f"I encountered an error while processing your request: {str(e)} - I cannot provide the requested information at this time."
+        # Simply delegate to the chat method
+        return await self.chat(query)
     
     async def _discover_tools(self, progress: Optional[Progress] = None) -> List[Tool]:
         """
@@ -119,6 +110,36 @@ class AgenticMCPAgent:
         
         return all_tools
     
+    async def _execute_with_session(
+        self, 
+        server_config: ServerConfig, 
+        session_function: Callable[[ClientSession], Awaitable[Any]]
+    ) -> Any:
+        """
+        Common helper method to execute operations with a session.
+        
+        Args:
+            server_config: Server configuration
+            session_function: Function to execute with the session
+            
+        Returns:
+            Result of the session function
+        """
+        server_params = get_server_params(server_config)
+        
+        if server_config.transport == "stdio":
+            client_factory = stdio_client
+        elif server_config.transport == "http":
+            client_factory = sse_client
+            server_params = server_params  # For HTTP servers, params is just the URL string
+        else:
+            raise ValueError(f"Unsupported transport: {server_config.transport}")
+            
+        async with client_factory(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return await session_function(session)
+    
     async def _get_server_tools(self, server_config: ServerConfig) -> List[Tool]:
         """
         Get tools from a single server.
@@ -129,25 +150,13 @@ class AgenticMCPAgent:
         Returns:
             List of tools from the server
         """
-        server_params = get_server_params(server_config)
-        
         try:
-            if server_config.transport == "stdio":
-                async with stdio_client(server_params) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        tools_response = await session.list_tools()
-                        return tools_response.tools
-            elif server_config.transport == "http":
-                url = server_params  # For HTTP servers, params is just the URL string
-                async with sse_client(url) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        tools_response = await session.list_tools()
-                        return tools_response.tools
-            else:
-                log.warning(f"Unsupported transport: {server_config.transport}")
-                return []
+            # Define the session function to list tools
+            async def list_tools_function(session):
+                tools_response = await session.list_tools()
+                return tools_response.tools
+                
+            return await self._execute_with_session(server_config, list_tools_function)
         except Exception as e:
             log.error(f"Error connecting to server {server_config.name}: {e}")
             raise
@@ -191,56 +200,28 @@ class AgenticMCPAgent:
             Result of tool execution
         """
         server_config = self.servers[server_name]
-        server_params = get_server_params(server_config)
         
         try:
-            if server_config.transport == "stdio":
-                async with stdio_client(server_params) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        
-                        # Call the tool
-                        log.debug(f"Executing tool {tool_name} on server {server_name} with parameters: {parameters}")
-                        result = await session.call_tool(tool_name, arguments=parameters)
-                        
-                        # Store raw result for debugging
-                        self._store_raw_result(tool_name, parameters, result)
-                        
-                        # Process the result based on its type
-                        if hasattr(result, 'content') and result.content:
-                            formatted_result = self._format_result(result)
-                            # Log the actual content of the result for debugging
-                            log.debug(f"Raw tool execution result: {result}")
-                            log.debug(f"Formatted tool execution result: {formatted_result}")
-                            return formatted_result
-                        else:
-                            log.debug("Tool executed successfully but returned no content.")
-                            return "Tool executed successfully but returned no content or empty data. Please note that no data was found for your query."
-            elif server_config.transport == "http":
-                url = server_params  # For HTTP servers, params is just the URL string
-                async with sse_client(url) as (read, write):
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        
-                        # Call the tool
-                        log.debug(f"Executing tool {tool_name} on server {server_name} with parameters: {parameters}")
-                        result = await session.call_tool(tool_name, arguments=parameters)
-                        
-                        # Store raw result for debugging
-                        self._store_raw_result(tool_name, parameters, result)
-                        
-                        # Process the result based on its type
-                        if hasattr(result, 'content') and result.content:
-                            formatted_result = self._format_result(result)
-                            # Log the actual content of the result for debugging
-                            log.debug(f"Raw tool execution result: {result}")
-                            log.debug(f"Formatted tool execution result: {formatted_result}")
-                            return formatted_result
-                        else:
-                            log.debug("Tool executed successfully but returned no content.")
-                            return "Tool executed successfully but returned no content or empty data. Please note that no data was found for your query."
-            else:
-                return f"Error: Unsupported transport {server_config.transport}"
+            # Define the session function to call the tool
+            async def call_tool_function(session):
+                log.debug(f"Executing tool {tool_name} on server {server_name} with parameters: {parameters}")
+                result = await session.call_tool(tool_name, arguments=parameters)
+                
+                # Store raw result for debugging
+                self._store_raw_result(tool_name, parameters, result)
+                
+                # Process the result based on its type
+                if hasattr(result, 'content') and result.content:
+                    formatted_result = self._format_result(result)
+                    # Log the actual content of the result for debugging
+                    log.debug(f"Raw tool execution result: {result}")
+                    log.debug(f"Formatted tool execution result: {formatted_result}")
+                    return formatted_result
+                else:
+                    log.debug("Tool executed successfully but returned no content.")
+                    return "Tool executed successfully but returned no content or empty data. Please note that no data was found for your query."
+            
+            return await self._execute_with_session(server_config, call_tool_function)
         except Exception as e:
             log.error(f"Error executing tool {tool_name} on server {server_name}: {e}")
             error_msg = f"Error executing tool: {str(e)} - Please note that no data was returned. Do not fabricate or invent any information."
@@ -403,15 +384,9 @@ class AgenticMCPAgent:
             tool_results = "\n\n".join(results)
             log.debug(f"All tool results: {tool_results}")
             
-            # Add special instruction to prevent fabricating data
+            # Add special instruction to prevent fabricating data using the constant from prompt.py
             if "no data" in tool_results.lower() or "no content" in tool_results.lower() or "empty" in tool_results.lower() or "error" in tool_results.lower():
-                special_instruction = (
-                    "IMPORTANT: The tools did not return any valid data. When generating your response, "
-                    "DO NOT MAKE UP OR FABRICATE ANY INFORMATION. Explicitly tell the user that no data "
-                    "was found and do not present any fictional events, meetings, or other information "
-                    "as if it were real. This is critical."
-                )
-                tool_results = f"{tool_results}\n\n{special_instruction}"
+                tool_results = f"{tool_results}\n\n{NO_DATA_INSTRUCTION}"
             
             # Add information about which tools were executed and with what parameters
             execution_summary = "\n".join(tool_execution_details)
