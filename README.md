@@ -54,6 +54,10 @@ Carlitos is Filippo's personal assistant inspired by Carlos Alcaraz (the tennis 
 ### Vamos Carlitos
 
 ```bash
+# first we need to run all the MCP servers
+docker compose up -d
+
+# then we can run Carlitos
 virtualenv venv
 source venv/bin/activate
 pip install -r requirements.txt

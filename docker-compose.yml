@@ -1,0 +1,12 @@
+services:
+  image-gen:
+    build:
+      context: ./carlitos/mcp-servers/image-gen
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./carlitos/mcp-servers/image-gen:/app
+    restart: unless-stopped
