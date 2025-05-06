@@ -109,41 +109,39 @@ class AgenticLLMToolSelector:
             log.error(f"Error getting tool selection from LLM: {e}")
             raise
     
-    async def analyze_task(self, query: str, available_tools: List[Tool], chat_history: List[Dict[str, str]] = None, detailed_server_info: Dict[str, str] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    async def analyze_task(self, query: str, available_tools: List[Tool], chat_history: List[Dict[str, str]] = None, detailed_server_info: Dict[str, str] = None, memory_context: str = None) -> Tuple[str, List[Dict[str, Any]]]:
         """
-        Analyze the task to determine what tools might be needed.
-        This is the "thinking" phase of the agentic process.
+        Analyze a user query and decide what tools to use.
         
         Args:
             query: User query
             available_tools: List of available tools
             chat_history: Optional chat history
             detailed_server_info: Optional dictionary of server names to descriptions
+            memory_context: Optional context from memory
             
         Returns:
-            Tuple of (thinking, needed_tools)
-            Where thinking is the agent's thought process
-            And needed_tools is a list of tool specifications
+            Tuple of (thinking result, list of needed tools)
         """
-        # Use all available tools without filtering
-        log.debug(f"Using all {len(available_tools)} tools without filtering")
+        # Format tools for the prompt
+        tools_formatted = self._format_tools(available_tools)
         
-        # Format chat history if available
+        # Format chat history if provided
         chat_history_formatted = ""
         if chat_history:
-            try:
-                # Format chat history as a string
-                history_items = []
-                for msg in chat_history[-5:]:  # Last 5 messages to save tokens
-                    prefix = "User: " if msg.role == "user" else "Carlitos: "
-                    history_items.append(f"{prefix}{msg.content}")
-                chat_history_formatted = "\n\n".join(history_items)
-            except Exception as e:
-                log.warning(f"Error formatting chat history: {e}")
-                chat_history_formatted = ""
+            chat_history_formatted = "\n".join([
+                f"{msg['role'].capitalize()}: {msg['content']}"
+                for msg in chat_history[-5:]  # Last 5 messages
+            ])
         
-        # Create prompt for task analysis
-        prompt = self._get_task_analysis_prompt(query, available_tools, detailed_server_info, chat_history_formatted)
+        # Get the prompt
+        prompt = self._get_task_analysis_prompt(
+            query, 
+            available_tools, 
+            detailed_server_info, 
+            chat_history_formatted,
+            memory_context
+        )
         
         log.debug(f"Sending task analysis prompt to OpenAI")
         
@@ -241,7 +239,7 @@ class AgenticLLMToolSelector:
             current_datetime=current_datetime
         )
     
-    def _get_task_analysis_prompt(self, query: str, available_tools: List[Tool], detailed_server_info: Dict[str, str] = None, chat_history_formatted: str = "") -> str:
+    def _get_task_analysis_prompt(self, query: str, available_tools: List[Tool], detailed_server_info: Dict[str, str] = None, chat_history_formatted: str = "", memory_context: str = None) -> str:
         """
         Create prompt for agentic task analysis.
         
@@ -250,32 +248,76 @@ class AgenticLLMToolSelector:
             available_tools: List of available tools
             detailed_server_info: Optional dictionary of server names to descriptions
             chat_history_formatted: Formatted chat history string
+            memory_context: Optional context from memory
             
         Returns:
-            Formatted prompt string
+            Prompt string
         """
-        tools_description = "\n".join([
-            f"- Name: {tool.name}\n  Description: {tool.description}\n  Parameters: {json.dumps(tool.inputSchema)}"
-            for tool in available_tools
-        ])
+        # Format available tools
+        tools_description = self._format_tools(available_tools)
         
-        # Include server descriptions if available
+        # Add detailed server info if available
         server_info = ""
         if detailed_server_info:
-            server_info = "\n\n## INTEGRATION DESCRIPTIONS:\n"
-            server_info += "\n".join([
-                f"- {server_name}: {description}"
-                for server_name, description in detailed_server_info.items()
-            ])
-        
-        # Include current date and time
+            server_info += "\n\nAdditional Server Information:\n"
+            for server_name, description in detailed_server_info.items():
+                server_info += f"- {server_name}: {description}\n"
+                
+        # Get current date and time for context
         current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        return TASK_ANALYSIS_PROMPT.format(
+        # Include memory context if available
+        memory_section = ""
+        if memory_context and memory_context.strip():
+            memory_section = f"\n\n{memory_context}"
+            
+        # Return the full prompt template
+        return """
+You are Carlitos, an intelligent assistant that can reason about which tools to use to help with a given task.
+
+Current Date/Time: {current_datetime}
+
+{chat_history_formatted}
+{memory_section}
+
+USER QUERY: {query}
+
+AVAILABLE TOOLS:
+{tools_description}
+
+YOUR TASK:
+1. Analyze the user's query to determine which tool(s), if any, would be helpful in accomplishing it.
+2. Think carefully about whether ANY tools are actually needed. Simple questions, general knowledge, or opinions don't require tools.
+3. For each tool you decide to use, identify the exact parameters needed.
+
+YOUR REASONING PROCESS:
+- Explain your thinking briefly
+- Decide if tools are needed (many questions can be answered directly)
+- Consider if multiple tools are required to fully address the query
+- Specify exact tool parameters needed based on the query
+
+RESPONSE FORMAT:
+{{
+  "thinking": "Your step-by-step analysis of the user's needs",
+  "tools_needed": [
+    {{
+      "name": "exact_tool_name_from_available_tools",
+      "parameters": {{
+        "param1": "value1",
+        "param2": "value2"
+      }},
+      "purpose": "Why you're calling this tool"
+    }}
+  ]
+}}
+
+If NO tools are needed, respond with an empty tools_needed array, but still provide your thinking.
+""".format(
             chat_history_formatted=chat_history_formatted,
             query=query,
             tools_description=tools_description + server_info,
-            current_datetime=current_datetime
+            current_datetime=current_datetime,
+            memory_section=memory_section
         )
     
     def _get_synthesis_prompt(self, query: str, thinking: str, tool_results: str, chat_history_formatted: str = "") -> str:
@@ -342,4 +384,52 @@ class AgenticLLMToolSelector:
             temperature=self.temperature,
         )
         
-        return response.choices[0].message.content 
+        return response.choices[0].message.content
+    
+    def _format_tools(self, available_tools: List[Tool]) -> str:
+        """
+        Format available tools for inclusion in prompts.
+        
+        Args:
+            available_tools: List of available tools
+            
+        Returns:
+            Formatted tools string
+        """
+        formatted_tools = []
+        
+        for tool in available_tools:
+            tool_info = f"Tool: {tool.name}\n"
+            tool_info += f"  Description: {tool.description}\n"
+            
+            # Format parameters
+            if hasattr(tool, 'inputSchema') and tool.inputSchema:
+                params = []
+                try:
+                    if isinstance(tool.inputSchema, dict) and "properties" in tool.inputSchema:
+                        properties = tool.inputSchema.get("properties", {})
+                        required = tool.inputSchema.get("required", [])
+                        
+                        for param_name, param_info in properties.items():
+                            param_type = param_info.get("type", "unknown")
+                            description = param_info.get("description", "")
+                            is_required = param_name in required
+                            
+                            param_str = f"    - {param_name} (Type: {param_type}"
+                            if is_required:
+                                param_str += ", Required"
+                            param_str += f"): {description}"
+                            params.append(param_str)
+                    else:
+                        # Simpler format if schema doesn't match expected structure
+                        params.append(f"    Parameters: {json.dumps(tool.inputSchema)}")
+                except Exception as e:
+                    # Fallback if parsing fails
+                    params.append(f"    Parameters: {str(tool.inputSchema)}")
+                
+                if params:
+                    tool_info += "  Parameters:\n" + "\n".join(params)
+            
+            formatted_tools.append(tool_info)
+        
+        return "\n".join(formatted_tools) 
