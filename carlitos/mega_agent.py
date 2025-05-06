@@ -1,3 +1,4 @@
+import re
 import logging
 import json
 from typing import Dict, List, Any, Optional, Tuple, NamedTuple
@@ -139,7 +140,24 @@ class MegaAgent:
                 memory_data = {}
                 if isinstance(memory_result, str):
                     try:
-                        memory_data = json.loads(memory_result)
+                        # Check if the result starts with 'Content of type text:' and extract the JSON
+                        if "Content of type text:" in memory_result:
+                            # Extract the JSON part that follows the prefix
+                            json_text = memory_result.split("Content of type text:", 1)[1].strip()
+                            
+                            # Try to find valid JSON by looking for matching braces
+                            json_pattern = re.compile(r'\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\}')
+                            json_match = json_pattern.search(json_text)
+                            
+                            if json_match:
+                                valid_json = json_match.group(0)
+                                log.debug(f"Extracted JSON: {valid_json}")
+                                memory_data = json.loads(valid_json)
+                            else:
+                                log.error("Could not extract valid JSON from memory_result")
+                        else:
+                            # Try parsing as regular JSON
+                            memory_data = json.loads(memory_result)
                     except json.JSONDecodeError as e:
                         log.error(f"Failed to decode memory_result string: {e} - Content: '{memory_result[:200]}...'") # Log part of the string
                         pass # Keep memory_data as empty dict

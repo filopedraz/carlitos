@@ -136,7 +136,20 @@ async def add_memory(messages: List[Dict[str, str]], user_id: str = "default") -
     logger.info(f"Tool 'add_memory' called with {len(messages)} messages for user_id: '{user_id}'")
     result = memory_manager.add_memory(messages, user_id)
     logger.info(f"Tool 'add_memory' received from manager: {result}")
-    return result
+    
+    # Return a clean, standardized response
+    clean_result = {
+        "success": result.get("success", False)
+    }
+    
+    if "message" in result:
+        clean_result["message"] = result["message"]
+    
+    if not result.get("success", False) and "error" in result:
+        clean_result["error"] = result["error"]
+        
+    logger.debug(f"Returning clean result: {clean_result}")
+    return clean_result
 
 @mcp.tool()
 async def search_memory(query: str, user_id: str = "default", limit: int = 5) -> Dict[str, Any]:
@@ -153,7 +166,6 @@ async def search_memory(query: str, user_id: str = "default", limit: int = 5) ->
         logger.debug("About to call memory_manager.search_memory")
         result = memory_manager.search_memory(query, user_id, limit)
         logger.debug(f"memory_manager.search_memory returned, type: {type(result).__name__}")
-        logger.info(f"Tool 'search_memory' received from manager: {json.dumps(result)}")
         
         # Ensure result is properly formatted as a dictionary
         if not isinstance(result, dict):
@@ -164,7 +176,18 @@ async def search_memory(query: str, user_id: str = "default", limit: int = 5) ->
         if not result.get("success", False):
             logger.warning(f"search_memory error: {result.get('error', 'Unknown error')}")
         
-        return result
+        # Ensure we're returning a clean dict with no extra text or prefixes
+        # This is critical for proper JSON handling in the mega_agent
+        clean_result = {
+            "success": result.get("success", False),
+            "results": result.get("results", []) if result.get("success", False) else [],
+        }
+        
+        if not result.get("success", False) and "error" in result:
+            clean_result["error"] = result["error"]
+            
+        logger.debug(f"Returning clean result: {clean_result}")
+        return clean_result
     except Exception as e:
         error_traceback = traceback.format_exc()
         logger.error(f"Unexpected error in search_memory tool: {str(e)}")
@@ -187,7 +210,20 @@ async def add_conversation(user_message: str, assistant_message: str, user_id: s
     logger.info(f"Tool 'add_conversation' called for user_id: '{user_id}'")
     result = memory_manager.add_conversation(user_message, assistant_message, user_id)
     logger.info(f"Tool 'add_conversation' received from manager: {result}")
-    return result
+    
+    # Return a clean, standardized response
+    clean_result = {
+        "success": result.get("success", False)
+    }
+    
+    if "message" in result:
+        clean_result["message"] = result["message"]
+    
+    if not result.get("success", False) and "error" in result:
+        clean_result["error"] = result["error"]
+        
+    logger.debug(f"Returning clean result: {clean_result}")
+    return clean_result
 
 if __name__ == "__main__":
     mcp.run(transport="sse", host="0.0.0.0", port=8000)
