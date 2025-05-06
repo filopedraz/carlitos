@@ -49,6 +49,9 @@ def generate_image(prompt, size="1024x1024", n=1, transparent=False, host="local
         return None
     except Exception as e:
         print(f"Unexpected error: {e}")
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
         return None
     
     # Get the request ID from the response

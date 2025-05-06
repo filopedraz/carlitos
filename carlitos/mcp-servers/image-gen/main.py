@@ -1,6 +1,6 @@
 import os
 from typing import Dict, List, Any, Optional, Tuple
-import openai
+from openai import OpenAI
 import json
 import uuid
 import uvicorn
@@ -21,7 +21,7 @@ class OpenAIImageGenServer:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable must be set")
-        openai.api_key = api_key
+        self.client = OpenAI(api_key=api_key)
     
     def generate_image_4o(self, prompt: str, size: str = "1024x1024", n: int = 1, 
                          transparent_background: bool = False, 
@@ -42,12 +42,12 @@ class OpenAIImageGenServer:
                 params["background"] = "transparent"
                 params["output_format"] = "png"  # Transparency requires PNG or WebP
             
-            # Make the API call
-            response = openai.Image.create(**params)
+            # Make the API call using the new client.images.generate method
+            response = self.client.images.generate(**params)
             
             return {
                 "success": True,
-                "data": response["data"][0]["url"] if response["data"] else None,
+                "data": response.data[0].url,
                 "model": "gpt-image-1"
             }
         except Exception as e:
@@ -76,6 +76,7 @@ async def generate_image(prompt: str, size: str = "1024x1024", n: int = 1,
         transparent_background: Whether to generate image with transparent background
         referenced_image_ids: IDs of images to reference for context
     """
+    # Call the method with properly named parameters
     result = server.generate_image_4o(
         prompt=prompt,
         size=size,
@@ -183,7 +184,7 @@ async def generate_image_endpoint(request: ImageGenRequest):
 
 async def process_image_request(request_id: str, prompt: str, size: str, n: int, transparent_background: bool = False):
     try:
-        # Call the image generator
+        # Call the image generator with properly named parameters
         result = server.generate_image_4o(
             prompt=prompt, 
             size=size, 
