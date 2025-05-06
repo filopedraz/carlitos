@@ -5,7 +5,7 @@ import time
 import sys
 import os
 
-def generate_image(prompt, size="1024x1024", n=1, transparent=False):
+def generate_image(prompt, size="1024x1024", n=1, transparent=False, host="localhost", port=8000):
     """
     Generate an image using the API endpoint
     
@@ -14,12 +14,14 @@ def generate_image(prompt, size="1024x1024", n=1, transparent=False):
         size: Image size (1024x1024, 1024x1792, or 1792x1024)
         n: Number of images to generate
         transparent: Whether to generate image with transparent background
+        host: Server hostname
+        port: Server port
         
     Returns:
         Generated image URL if successful
     """
-    # API endpoint URL - change the host/port if needed
-    api_url = "http://localhost:8000/api/generate"
+    # API endpoint URL
+    api_url = f"http://{host}:{port}/api/generate"
     
     # Create the request payload
     payload = {
@@ -29,15 +31,24 @@ def generate_image(prompt, size="1024x1024", n=1, transparent=False):
         "transparent_background": transparent
     }
     
+    print(f"Connecting to server at: {api_url}")
     print(f"Sending request to generate image with prompt: '{prompt}'")
     print(f"Settings: size={size}, transparent={transparent}")
     
-    # Make the POST request to start generation
-    response = requests.post(api_url, json=payload)
-    
-    if response.status_code != 200:
-        print(f"Error: Received status code {response.status_code}")
-        print(response.text)
+    try:
+        # Make the POST request to start generation
+        response = requests.post(api_url, json=payload)
+        response.raise_for_status()  # Raise exception for 4XX/5XX responses
+    except requests.exceptions.ConnectionError:
+        print(f"Error: Could not connect to server at {api_url}")
+        print("Make sure the server is running and accessible.")
+        return None
+    except requests.exceptions.HTTPError as e:
+        print(f"HTTP Error: {e}")
+        print(f"Response text: {response.text}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error: {e}")
         return None
     
     # Get the request ID from the response
@@ -97,10 +108,13 @@ def print_help():
     print("  --help         Show this help message")
     print("  --transparent  Generate image with transparent background")
     print("  --size SIZE    Set image size (1024x1024, 1024x1792, or 1792x1024)")
+    print("  --host HOST    Server hostname (default: localhost)")
+    print("  --port PORT    Server port (default: 8000)")
     print("\nExamples:")
     print("  python test_image_gen.py \"A futuristic cityscape with flying cars\"")
     print("  python test_image_gen.py --transparent \"A logo for a tech company\"")
     print("  python test_image_gen.py --size 1024x1792 \"A tall skyscraper\"")
+    print("  python test_image_gen.py --host 192.168.1.100 --port 8080 \"A mountain landscape\"")
 
 if __name__ == "__main__":
     # Check if OPENAI_API_KEY is set
@@ -113,6 +127,8 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     transparent = False
     size = "1024x1024"
+    host = "localhost"
+    port = 8000
     prompt = "A futuristic cityscape with flying cars and neon lights"
     
     if "--help" in args:
@@ -129,12 +145,24 @@ if __name__ == "__main__":
         args.pop(size_index)  # Remove --size
         args.pop(size_index)  # Remove the size value
     
+    if "--host" in args and len(args) > args.index("--host") + 1:
+        host_index = args.index("--host")
+        host = args[host_index + 1]
+        args.pop(host_index)  # Remove --host
+        args.pop(host_index)  # Remove the host value
+    
+    if "--port" in args and len(args) > args.index("--port") + 1:
+        port_index = args.index("--port")
+        port = int(args[port_index + 1])
+        args.pop(port_index)  # Remove --port
+        args.pop(port_index)  # Remove the port value
+    
     # Any remaining arguments are treated as the prompt
     if args:
         prompt = " ".join(args)
     
     # Generate the image
-    result = generate_image(prompt, size=size, transparent=transparent)
+    result = generate_image(prompt, size=size, transparent=transparent, host=host, port=port)
     
     if result:
         print("Image generation successful!")

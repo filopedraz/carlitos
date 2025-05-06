@@ -60,7 +60,7 @@ class OpenAIImageGenServer:
 server = OpenAIImageGenServer()
 
 # Create FastMCP instance
-mcp = FastMCP("mix_server")
+mcp = FastMCP("GPT-Image-1 Generator")
 
 @mcp.tool()
 async def generate_image(prompt: str, size: str = "1024x1024", n: int = 1, 
@@ -122,9 +122,21 @@ app.add_middleware(
 
 # Mount the SSE MCP server in the FastAPI app
 sse_app = create_sse_server(mcp)
-app.mount("/", sse_app)
+app.mount("/mcp", sse_app)
 
 # Add root path handler
+@app.get("/")
+async def root():
+    """Return information about the server"""
+    return {
+        "message": "MCP Image Generation Server",
+        "description": "Generate images using OpenAI's GPT-4o API (gpt-image-1)",
+        "version": "1.0.0",
+        "mcp_endpoint": "/mcp/sse",
+        "api_endpoint": "/api/generate"
+    }
+
+# Info path handler
 @app.get("/info")
 async def info():
     """Return information about the server"""
@@ -132,7 +144,7 @@ async def info():
         "message": "MCP Image Generation Server",
         "description": "Generate images using OpenAI's GPT-4o API",
         "version": "1.0.0",
-        "mcp_endpoint": "/sse"
+        "mcp_endpoint": "/mcp/sse"
     }
 
 # In-memory request tracking for direct API usage
@@ -242,6 +254,7 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     
     print(f"Starting MCP Image Generation Server on {host}:{port}")
-    print(f"SSE MCP endpoint available at http://{host}:{port}/sse")
-    print(f"Direct API endpoint available at http://{host}:{port}/api/generate")
+    print(f"Root API info: http://{host}:{port}/")
+    print(f"MCP Endpoint (Claude/Cursor): http://{host}:{port}/mcp/sse")
+    print(f"HTTP API for image generation: http://{host}:{port}/api/generate")
     uvicorn.run(app, host=host, port=port)
