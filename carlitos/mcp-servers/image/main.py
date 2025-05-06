@@ -8,7 +8,7 @@ from fastmcp import FastMCP
 from openai import OpenAI
 
 # Set up logging
-logging.basicConfig(level=logging.INFO, 
+logging.basicConfig(level=logging.DEBUG, 
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                    handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger("image_server")
