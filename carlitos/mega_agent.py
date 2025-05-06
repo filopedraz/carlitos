@@ -133,17 +133,25 @@ class MegaAgent:
                     "search_memory",
                     {"query": message, "user_id": self.user_id, "limit": 3}
                 )
+                log.debug(f"Raw memory_result from memory_agent._execute_tool: {memory_result}")
                 
                 # Parse memory results
-                memory_data = json.loads(memory_result)
-                if isinstance(memory_data, str):
+                memory_data = {}
+                if isinstance(memory_result, str):
                     try:
-                        memory_data = json.loads(memory_data)
-                    except:
-                        pass
-                
+                        memory_data = json.loads(memory_result)
+                    except json.JSONDecodeError as e:
+                        log.error(f"Failed to decode memory_result string: {e} - Content: '{memory_result[:200]}...'") # Log part of the string
+                        pass # Keep memory_data as empty dict
+                elif isinstance(memory_result, dict):
+                    memory_data = memory_result # Already a dict
+                else:
+                    log.warning(f"Unexpected type for memory_result: {type(memory_result)}. Expected str or dict.")
+
+                log.debug(f"Parsed memory_data: {memory_data}")
+
                 # Extract relevant memories as context
-                if isinstance(memory_data, dict) and memory_data.get("success") and memory_data.get("results"):
+                if memory_data.get("success") and memory_data.get("results"):
                     memories = memory_data["results"]
                     
                     # Format memory as context
@@ -152,6 +160,7 @@ class MegaAgent:
                         memory_context += f"{i+1}. {memory}\n"
                     
                     log.info(f"Retrieved {len(memories)} relevant memories for context")
+                    log.debug(f"Formatted memory_context: {memory_context}")
             except Exception as e:
                 log.error(f"Error retrieving memories: {e}")
             

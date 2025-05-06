@@ -1,22 +1,22 @@
 services:
-  image-gen:
-    build:
-      context: ./carlitos/mcp-servers/image
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    volumes:
-      - ./carlitos/mcp-servers/image:/app
-    restart: unless-stopped
+  # image:
+  #   build:
+  #     context: ./carlitos/mcp-servers/image
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "8001:8000"
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./carlitos/mcp-servers/image:/app
+  #   restart: unless-stopped
 
   memory:
     build:
       context: ./carlitos/mcp-servers/memory
       dockerfile: Dockerfile
     ports:
-      - "8001:8000"
+      - "8000:8000"
     env_file:
       - .env
     volumes:

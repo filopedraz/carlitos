@@ -7,3 +7,4 @@ pillow==11.2.1
 httpx==0.28.1
 mcp==1.7.1
 mem0ai==0.1.97
+fastmcp==2.2.10
