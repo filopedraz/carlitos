@@ -109,7 +109,7 @@ class AgenticLLMToolSelector:
             log.error(f"Error getting tool selection from LLM: {e}")
             raise
     
-    async def analyze_task(self, query: str, available_tools: List[Tool], chat_history: List[Dict[str, str]] = None, detailed_server_info: Dict[str, str] = None, memory_context: str = None) -> Tuple[str, List[Dict[str, Any]]]:
+    async def analyze_task(self, query: str, available_tools: List[Tool], chat_history: List[Dict[str, str]] = None, detailed_server_info: Dict[str, str] = None) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Analyze a user query and decide what tools to use.
         
@@ -118,7 +118,6 @@ class AgenticLLMToolSelector:
             available_tools: List of available tools
             chat_history: Optional chat history
             detailed_server_info: Optional dictionary of server names to descriptions
-            memory_context: Optional context from memory
             
         Returns:
             Tuple of (thinking result, list of needed tools)
@@ -139,8 +138,7 @@ class AgenticLLMToolSelector:
             query, 
             available_tools, 
             detailed_server_info, 
-            chat_history_formatted,
-            memory_context
+            chat_history_formatted
         )
         
         log.debug(f"Sending task analysis prompt to OpenAI")
@@ -173,46 +171,72 @@ class AgenticLLMToolSelector:
             log.error(f"Error in task analysis: {e}")
             return f"I encountered an error while analyzing your request: {str(e)}", []
     
-    async def synthesize_results(self, query: str, thinking: str, tool_results: str, chat_history: List = None) -> str:
+    async def synthesize_results(self, query: str, thinking: str, tool_results: str, chat_history: List[Dict[str, str]] = None) -> str:
         """
-        Synthesize the results of tool executions into a coherent response.
+        Synthesize tool results to provide an answer to the user.
         
         Args:
-            query: Original user query
-            thinking: Initial agent thinking
-            tool_results: Results from tool executions
+            query: User query
+            thinking: The thinking process that led to tool selection
+            tool_results: Results from executing the tools
             chat_history: Optional chat history
             
         Returns:
             Synthesized response
         """
-        # Format chat history if available
+        # Format chat history if provided
         chat_history_formatted = ""
         if chat_history:
-            try:
-                # Format chat history as a string
-                history_items = []
-                for msg in chat_history[-5:]:  # Last 5 messages to save tokens
-                    prefix = "User: " if msg.role == "user" else "Carlitos: "
-                    history_items.append(f"{prefix}{msg.content}")
-                chat_history_formatted = "\n\n".join(history_items)
-            except Exception as e:
-                log.warning(f"Error formatting chat history: {e}")
-                chat_history_formatted = ""
-                
-        # Create prompt for synthesis
-        prompt = self._get_synthesis_prompt(query, thinking, tool_results, chat_history_formatted)
+            chat_history_formatted = "\n".join([
+                f"{msg['role'].capitalize()}: {msg['content']}"
+                for msg in chat_history[-5:]  # Last 5 messages
+            ])
+            
+        # Get current date and time for context
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        log.debug(f"Sending synthesis prompt to OpenAI")
+        # Get the synthesis prompt
+        prompt = SYNTHESIS_PROMPT.format(
+            query=query,
+            thinking=thinking,
+            tool_results=tool_results,
+            chat_history_formatted=chat_history_formatted,
+            current_datetime=current_datetime
+        )
+        
+        log.debug(f"Sending synthesis prompt to OpenAI with {len(tool_results)} chars of tool results")
         
         try:
             # Get response from OpenAI
             response = self._get_openai_synthesis_response(prompt)
+            
             return response
             
         except Exception as e:
-            log.error(f"Error in synthesis: {e}")
-            return f"I encountered an error while synthesizing the results: {str(e)}\n\nRaw tool results: {tool_results}"
+            log.error(f"Error in result synthesis: {e}")
+            # Fallback response
+            return f"I've processed your request, but encountered an error when formatting the results: {str(e)}. Here's the raw data: {tool_results}"
+    
+    def _get_openai_response(self, prompt: str) -> str:
+        """
+        Get response from OpenAI.
+        
+        Args:
+            prompt: The prompt to send
+            
+        Returns:
+            Response text
+        """
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": "You are a helpful AI assistant that analyzes tasks and selects appropriate tools to execute them."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=self.temperature,
+        )
+        
+        return response.choices[0].message.content
     
     def _get_tool_selection_prompt(self, query: str, available_tools: List[Tool]) -> str:
         """
@@ -239,7 +263,7 @@ class AgenticLLMToolSelector:
             current_datetime=current_datetime
         )
     
-    def _get_task_analysis_prompt(self, query: str, available_tools: List[Tool], detailed_server_info: Dict[str, str] = None, chat_history_formatted: str = "", memory_context: str = None) -> str:
+    def _get_task_analysis_prompt(self, query: str, available_tools: List[Tool], detailed_server_info: Dict[str, str] = None, chat_history_formatted: str = "") -> str:
         """
         Create prompt for agentic task analysis.
         
@@ -248,7 +272,6 @@ class AgenticLLMToolSelector:
             available_tools: List of available tools
             detailed_server_info: Optional dictionary of server names to descriptions
             chat_history_formatted: Formatted chat history string
-            memory_context: Optional context from memory
             
         Returns:
             Prompt string
@@ -257,113 +280,21 @@ class AgenticLLMToolSelector:
         tools_description = self._format_tools(available_tools)
         
         # Add detailed server info if available
-        server_info = ""
         if detailed_server_info:
-            server_info += "\n\nAdditional Server Information:\n"
+            tools_description += "\n\nAdditional Server Information:\n"
             for server_name, description in detailed_server_info.items():
-                server_info += f"- {server_name}: {description}\n"
+                tools_description += f"- {server_name}: {description}\n"
                 
         # Get current date and time for context
         current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Include memory context if available
-        memory_section = ""
-        if memory_context and memory_context.strip():
-            memory_section = f"\n\n{memory_context}"
-            
-        # Return the full prompt template
-        return """
-You are Carlitos, an intelligent assistant that can reason about which tools to use to help with a given task.
-
-Current Date/Time: {current_datetime}
-
-{chat_history_formatted}
-{memory_section}
-
-USER QUERY: {query}
-
-AVAILABLE TOOLS:
-{tools_description}
-
-YOUR TASK:
-1. Analyze the user's query to determine which tool(s), if any, would be helpful in accomplishing it.
-2. Think carefully about whether ANY tools are actually needed. Simple questions, general knowledge, or opinions don't require tools.
-3. For each tool you decide to use, identify the exact parameters needed.
-
-YOUR REASONING PROCESS:
-- Explain your thinking briefly
-- Decide if tools are needed (many questions can be answered directly)
-- Consider if multiple tools are required to fully address the query
-- Specify exact tool parameters needed based on the query
-
-RESPONSE FORMAT:
-{{
-  "thinking": "Your step-by-step analysis of the user's needs",
-  "tools_needed": [
-    {{
-      "name": "exact_tool_name_from_available_tools",
-      "parameters": {{
-        "param1": "value1",
-        "param2": "value2"
-      }},
-      "purpose": "Why you're calling this tool"
-    }}
-  ]
-}}
-
-If NO tools are needed, respond with an empty tools_needed array, but still provide your thinking.
-""".format(
-            chat_history_formatted=chat_history_formatted,
+        # Return the prompt using the template from prompt.py
+        return TASK_ANALYSIS_PROMPT.format(
             query=query,
-            tools_description=tools_description + server_info,
-            current_datetime=current_datetime,
-            memory_section=memory_section
-        )
-    
-    def _get_synthesis_prompt(self, query: str, thinking: str, tool_results: str, chat_history_formatted: str = "") -> str:
-        """
-        Create prompt for synthesizing results.
-        
-        Args:
-            query: Original user query
-            thinking: Initial agent thinking
-            tool_results: Results from tool executions
-            chat_history_formatted: Formatted chat history string
-            
-        Returns:
-            Formatted prompt string
-        """
-        # Include current date and time
-        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        return SYNTHESIS_PROMPT.format(
+            tools_description=tools_description,
             chat_history_formatted=chat_history_formatted,
-            query=query,
-            thinking=thinking,
-            tool_results=tool_results,
             current_datetime=current_datetime
         )
-    
-    def _get_openai_response(self, prompt: str) -> str:
-        """
-        Get response from OpenAI.
-        
-        Args:
-            prompt: The prompt to send
-            
-        Returns:
-            Response text
-        """
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant that selects the appropriate tool based on user queries."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=self.temperature,
-        )
-        
-        return response.choices[0].message.content
     
     def _get_openai_synthesis_response(self, prompt: str) -> str:
         """

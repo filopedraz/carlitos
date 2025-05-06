@@ -37,9 +37,8 @@ class MegaAgent:
         self._last_tool_results = None
         self.integration_types = set()
         self._current_agent_type = None  # Track the current agent being used
-        self.chat_history = []  # Store chat history temporarily before saving to memory
-        self.user_id = "default"  # Default user ID for memory
-        self.memory_server = None  # Will be set during initialization
+        self.chat_history = []  # Store chat history temporarily
+        self.user_id = "default"  # Default user ID
         
         # Extract server descriptions from config
         for server in config.servers:
@@ -49,10 +48,6 @@ class MegaAgent:
                 # Also keep track of integration types
                 integration_type = self._get_integration_type(server.name)
                 self.integration_types.add(integration_type)
-                
-                # Find the memory server if present
-                if "memory" in server.name.lower():
-                    self.memory_server = server.name
         
         log.debug(f"Initialized MegaAgent with {len(config.servers)} potential servers")
     
@@ -105,7 +100,7 @@ class MegaAgent:
         
         Args:
             message: User message
-            user_id: Optional user ID for memory (defaults to self.user_id)
+            user_id: Optional user ID (defaults to self.user_id)
             
         Returns:
             Agent response
@@ -123,67 +118,8 @@ class MegaAgent:
         if not self.sub_agents:
             await self.initialize_sub_agents()
         
-        # Retrieve relevant memories for context if memory server is available
-        memory_context = ""
-        if self.memory_server and "memory" in self.sub_agents:
-            memory_agent = self.sub_agents["memory"]
-            try:
-                # Search memory for relevant context
-                memory_result = await memory_agent._execute_tool(
-                    self.memory_server,
-                    "search_memory",
-                    {"query": message, "user_id": self.user_id, "limit": 3}
-                )
-                log.debug(f"Raw memory_result from memory_agent._execute_tool: {memory_result}")
-                
-                # Parse memory results
-                memory_data = {}
-                if isinstance(memory_result, str):
-                    try:
-                        # Check if the result starts with 'Content of type text:' and extract the JSON
-                        if "Content of type text:" in memory_result:
-                            # Extract the JSON part that follows the prefix
-                            json_text = memory_result.split("Content of type text:", 1)[1].strip()
-                            
-                            # Try to find valid JSON by looking for matching braces
-                            json_pattern = re.compile(r'\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\}')
-                            json_match = json_pattern.search(json_text)
-                            
-                            if json_match:
-                                valid_json = json_match.group(0)
-                                log.debug(f"Extracted JSON: {valid_json}")
-                                memory_data = json.loads(valid_json)
-                            else:
-                                log.error("Could not extract valid JSON from memory_result")
-                        else:
-                            # Try parsing as regular JSON
-                            memory_data = json.loads(memory_result)
-                    except json.JSONDecodeError as e:
-                        log.error(f"Failed to decode memory_result string: {e} - Content: '{memory_result[:200]}...'") # Log part of the string
-                        pass # Keep memory_data as empty dict
-                elif isinstance(memory_result, dict):
-                    memory_data = memory_result # Already a dict
-                else:
-                    log.warning(f"Unexpected type for memory_result: {type(memory_result)}. Expected str or dict.")
-
-                log.debug(f"Parsed memory_data: {memory_data}")
-
-                # Extract relevant memories as context
-                if memory_data.get("success") and memory_data.get("results"):
-                    memories = memory_data["results"]
-                    
-                    # Format memory as context
-                    memory_context = "Relevant context from memory:\n"
-                    for i, memory in enumerate(memories):
-                        memory_context += f"{i+1}. {memory}\n"
-                    
-                    log.info(f"Retrieved {len(memories)} relevant memories for context")
-                    log.debug(f"Formatted memory_context: {memory_context}")
-            except Exception as e:
-                log.error(f"Error retrieving memories: {e}")
-            
         # Use lightweight routing based on integration descriptions
-        relevant_agents = await self._lightweight_route_request(message, memory_context)
+        relevant_agents = await self._lightweight_route_request(message)
         
         # If we have specific agents identified, use them
         if relevant_agents:
@@ -201,9 +137,6 @@ class MegaAgent:
                 # Add response to chat history
                 self.chat_history.append(ChatMessage(role="assistant", content=response))
                 
-                # Save conversation to memory if memory server is available
-                await self._save_conversation_to_memory(message, response)
-                
                 return response
             
             # If we have multiple relevant agents, coordinate between them
@@ -213,9 +146,6 @@ class MegaAgent:
             
             # Add response to chat history
             self.chat_history.append(ChatMessage(role="assistant", content=response))
-            
-            # Save conversation to memory if memory server is available
-            await self._save_conversation_to_memory(message, response)
             
             return response
         
@@ -230,38 +160,7 @@ class MegaAgent:
         # Add clarification to chat history
         self.chat_history.append(ChatMessage(role="assistant", content=clarification))
         
-        # Save conversation to memory if memory server is available
-        await self._save_conversation_to_memory(message, clarification)
-        
         return clarification
-    
-    async def _save_conversation_to_memory(self, user_message: str, assistant_response: str):
-        """
-        Save the conversation to memory using the memory server.
-        
-        Args:
-            user_message: User message
-            assistant_response: Assistant response
-        """
-        if not self.memory_server or "memory" not in self.sub_agents:
-            log.debug("Memory server not available, skipping conversation save")
-            return
-        
-        memory_agent = self.sub_agents["memory"]
-        try:
-            # Add conversation to memory
-            await memory_agent._execute_tool(
-                self.memory_server,
-                "add_conversation",
-                {
-                    "user_message": user_message,
-                    "assistant_message": assistant_response,
-                    "user_id": self.user_id
-                }
-            )
-            log.info("Saved conversation to memory")
-        except Exception as e:
-            log.error(f"Error saving conversation to memory: {e}")
     
     async def _ask_clarification_question(self, message: str, available_integrations: str) -> str:
         """
@@ -330,7 +229,7 @@ Do not apologize profusely or be overly formal. Be helpful and direct.
         if not self.chat_history:
             return "No previous conversation."
             
-        # Format the history (limit to last 5 exchanges to save tokens)
+        # Format the history (limit to last 10 exchanges to save tokens)
         formatted = []
         for msg in self.chat_history[-10:]:  # Last 10 messages
             prefix = "User: " if msg.role == "user" else "Carlitos: "
@@ -358,14 +257,13 @@ Do not apologize profusely or be overly formal. Be helpful and direct.
             
         return "\n".join(formatted)
     
-    async def _lightweight_route_request(self, message: str, memory_context: str = "") -> Dict[str, AgenticMCPAgent]:
+    async def _lightweight_route_request(self, message: str) -> Dict[str, AgenticMCPAgent]:
         """
         Use a lightweight approach to route requests based only on integration descriptions.
         This avoids sending all tool details to the LLM for routing.
         
         Args:
             message: User message
-            memory_context: Optional context from memory
             
         Returns:
             Dictionary of integration types to sub-agents
@@ -387,8 +285,6 @@ You are Carlitos, a routing assistant. Your task is to determine which integrati
 
 ### Current User Query:
 {message}
-
-{memory_context}
 
 ### Available Integrations:
 {self._format_integration_descriptions()}
