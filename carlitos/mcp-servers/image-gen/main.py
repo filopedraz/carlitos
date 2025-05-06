@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Any, Optional, List
+from typing import Dict, List, Any, Optional, Tuple
 import openai
 import base64
 from io import BytesIO
@@ -12,6 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 import asyncio
 from pydantic import BaseModel
+
+from mcp.server.fastmcp import FastMCP
+from mcp.server.sse import SseServerTransport
+from starlette.applications import Starlette
+from starlette.routing import Mount, Route
 
 class OpenAIImageGenServer:
     def __init__(self):
@@ -114,101 +119,83 @@ class OpenAIImageGenServer:
                 "error": str(e)
             }
 
-# MCP Tool Definitions
-def register_tools():
-    return {
-        "openai_generate_image": {
-            "name": "openai_generate_image",
-            "description": "Generate an image using OpenAI's GPT-4o model (falls back to DALL-E 3 if 4o is not available)",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Text description of the image to generate"
-                    },
-                    "size": {
-                        "type": "string",
-                        "description": "Size of the generated image (1024x1024, 1024x1792, or 1792x1024)",
-                        "default": "1024x1024"
-                    },
-                    "n": {
-                        "type": "integer",
-                        "description": "Number of images to generate (1-10)",
-                        "default": 1
-                    },
-                    "transparent_background": {
-                        "type": "boolean",
-                        "description": "Whether to generate image with transparent background (GPT-4o only)",
-                        "default": False
-                    },
-                    "referenced_image_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "IDs of images to reference for context (GPT-4o only)",
-                        "default": []
-                    }
-                },
-                "required": ["prompt"]
-            }
-        },
-        "openai_edit_image": {
-            "name": "openai_edit_image",
-            "description": "Edit an existing image using OpenAI's API",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "image": {
-                        "type": "string",
-                        "description": "Base64 encoded image to edit"
-                    },
-                    "mask": {
-                        "type": "string",
-                        "description": "Optional base64 encoded mask image"
-                    },
-                    "prompt": {
-                        "type": "string",
-                        "description": "Text description of the desired edit"
-                    }
-                },
-                "required": ["image", "prompt"]
-            }
-        }
-    }
-
 # Initialize server
 server = OpenAIImageGenServer()
 
-# MCP handlers
-def handle_openai_generate_image(params: Dict[str, Any]) -> Dict[str, Any]:
+# Create FastMCP instance
+mcp = FastMCP("mix_server")
+
+@mcp.tool()
+async def generate_image(prompt: str, size: str = "1024x1024", n: int = 1, 
+                       transparent_background: bool = False, 
+                       referenced_image_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    Generate an image using OpenAI's GPT-4o model (falls back to DALL-E 3 if 4o is not available)
+    
+    Args:
+        prompt: Text description of the image to generate
+        size: Size of the generated image (1024x1024, 1024x1792, or 1792x1024)
+        n: Number of images to generate (1-10)
+        transparent_background: Whether to generate image with transparent background (GPT-4o only)
+        referenced_image_ids: IDs of images to reference for context (GPT-4o only)
+    """
     try:
-        return server.generate_image_4o(
-            prompt=params["prompt"],
-            size=params.get("size", "1024x1024"),
-            n=params.get("n", 1),
-            transparent_background=params.get("transparent_background", False),
-            referenced_image_ids=params.get("referenced_image_ids", [])
+        result = server.generate_image_4o(
+            prompt=prompt,
+            size=size,
+            n=n,
+            transparent_background=transparent_background,
+            referenced_image_ids=referenced_image_ids
         )
+        return {"type": "text/plain", "text": json.dumps(result)}
     except NotImplementedError:
         # Fallback to DALL-E 3 if GPT-4o is not available
-        return server.generate_image_dalle(
-            prompt=params["prompt"],
-            size=params.get("size", "1024x1024"),
-            n=params.get("n", 1)
+        result = server.generate_image_dalle(
+            prompt=prompt,
+            size=size,
+            n=n
         )
+        return {"type": "text/plain", "text": json.dumps(result)}
 
-def handle_openai_edit_image(params: Dict[str, Any]) -> Dict[str, Any]:
-    return server.edit_image(
-        image=params["image"],
-        mask=params.get("mask"),
-        prompt=params["prompt"]
+@mcp.tool()
+async def edit_image(image: str, mask: Optional[str], prompt: str) -> Dict[str, Any]:
+    """
+    Edit an existing image using OpenAI's API
+    
+    Args:
+        image: Base64 encoded image to edit
+        mask: Optional base64 encoded mask image
+        prompt: Text description of the desired edit
+    """
+    result = server.edit_image(
+        image=image,
+        mask=mask,
+        prompt=prompt
     )
+    return {"type": "text/plain", "text": json.dumps(result)}
 
-# Map tool names to handlers
-HANDLERS = {
-    "openai_generate_image": handle_openai_generate_image,
-    "openai_edit_image": handle_openai_edit_image
-}
+# Create an SSE transport for the MCP server
+def create_sse_server(mcp: FastMCP):
+    """Create a Starlette app that handles SSE connections and message handling"""
+    transport = SseServerTransport("/messages/")
+
+    # Define handler functions
+    async def handle_sse(request):
+        async with transport.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await mcp._mcp_server.run(
+                streams[0], streams[1], mcp._mcp_server.create_initialization_options()
+            )
+        return Response()
+
+    # Create and return a Starlette application with the SSE route
+    return Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages", app=transport.handle_post_message),
+        ]
+    )
 
 # FastAPI application setup
 app = FastAPI(title="MCP Image Generation Server")
@@ -222,71 +209,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Add root path handler
-@app.get("/")
-async def root():
-    """Redirect to tools endpoint"""
-    return {"message": "MCP Image Generation Server", "endpoints": {
-        "tools": "/tools", 
-        "api": "/api/mcp"
-    }}
+# Mount the SSE MCP server in the FastAPI app
+sse_app = create_sse_server(mcp)
+app.mount("/", sse_app)
 
-# In-memory request tracking
+# Add root path handler
+@app.get("/info")
+async def info():
+    """Return information about the server"""
+    return {
+        "message": "MCP Image Generation Server",
+        "description": "Generate and edit images using OpenAI's APIs",
+        "version": "1.0.0",
+        "mcp_endpoint": "/sse"
+    }
+
+# In-memory request tracking for direct API usage
 requests = {}
 
-# Standard MCP endpoints
-class MCPRequest(BaseModel):
+# Standard API endpoint (non-MCP)
+class ImageGenRequest(BaseModel):
     id: Optional[str] = None
-    tool: str
-    params: Dict[str, Any]
+    prompt: str
+    size: str = "1024x1024"
+    n: int = 1
 
-# MCP-compatible endpoints
-@app.post("/")
-async def mcp_root(request: Request):
-    """MCP protocol compatible endpoint"""
-    data = await request.json()
-    method = data.get("method")
-    
-    if method == "initialize":
-        return {"jsonrpc": "2.0", "id": data.get("id"), "result": {}}
-    
-    elif method == "list_tools":
-        tools = register_tools()
-        tool_list = []
-        for name, tool in tools.items():
-            tool_list.append(tool)
-        return {"jsonrpc": "2.0", "id": data.get("id"), "result": {"tools": tool_list}}
-    
-    elif method == "call_tool":
-        id = data.get("id")
-        params = data.get("params", {})
-        tool_name = params.get("name")
-        arguments = params.get("arguments", {})
-        
-        if tool_name not in HANDLERS:
-            return {"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": f"Unknown tool: {tool_name}"}}
-        
-        try:
-            result = HANDLERS[tool_name](arguments)
-            return {
-                "jsonrpc": "2.0", 
-                "id": id, 
-                "result": {
-                    "content": [
-                        {"type": "text/plain", "text": json.dumps(result)}
-                    ]
-                }
-            }
-        except Exception as e:
-            return {"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": str(e)}}
-    
-    return {"jsonrpc": "2.0", "id": data.get("id"), "error": {"code": -32601, "message": "Method not found"}}
-
-@app.post("/api/mcp")
-async def mcp_endpoint(request: MCPRequest):
+@app.post("/api/generate")
+async def generate_image_endpoint(request: ImageGenRequest):
+    """Direct API endpoint for image generation (non-MCP)"""
     request_id = request.id or str(uuid.uuid4())
-    tool_name = request.tool
-    params = request.params
     
     # Store request for SSE updates
     requests[request_id] = {
@@ -296,22 +247,14 @@ async def mcp_endpoint(request: MCPRequest):
     }
     
     # Process request asynchronously
-    asyncio.create_task(process_request(request_id, tool_name, params))
+    asyncio.create_task(process_image_request(request_id, request.prompt, request.size, request.n))
     
     return {"request_id": request_id}
 
-async def process_request(request_id: str, tool_name: str, params: Dict[str, Any]):
+async def process_image_request(request_id: str, prompt: str, size: str, n: int):
     try:
-        if tool_name not in HANDLERS:
-            requests[request_id] = {
-                "status": "error",
-                "result": None,
-                "error": f"Unknown tool: {tool_name}"
-            }
-            return
-        
-        # Call the appropriate handler
-        result = HANDLERS[tool_name](params)
+        # Call the image generator
+        result = server.generate_image_dalle(prompt, size, n)
         
         # Update request status
         requests[request_id] = {
@@ -326,8 +269,16 @@ async def process_request(request_id: str, tool_name: str, params: Dict[str, Any
             "error": str(e)
         }
 
-@app.get("/api/mcp/sse/{request_id}")
-async def sse_endpoint(request_id: str):
+@app.get("/api/status/{request_id}")
+async def request_status(request_id: str):
+    """Check status of an image generation request"""
+    if request_id not in requests:
+        return {"status": "not_found"}
+    return requests[request_id]
+
+@app.get("/api/sse/{request_id}")
+async def sse_api_endpoint(request_id: str):
+    """SSE endpoint for tracking request progress (for direct API use)"""
     async def event_generator():
         while True:
             if request_id in requests:
@@ -363,14 +314,11 @@ async def sse_endpoint(request_id: str):
     
     return EventSourceResponse(event_generator())
 
-@app.get("/tools")
-async def get_tools():
-    """Endpoint to get available tools and their definitions"""
-    return register_tools()
-
 if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
     
     print(f"Starting MCP Image Generation Server on {host}:{port}")
+    print(f"SSE MCP endpoint available at http://{host}:{port}/sse")
+    print(f"Direct API endpoint available at http://{host}:{port}/api/generate")
     uvicorn.run(app, host=host, port=port)
