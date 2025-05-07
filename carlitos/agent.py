@@ -8,7 +8,7 @@ from mcp.client.sse import sse_client
 from rich.progress import Progress
 
 from carlitos.config import CarlitosConfig, ServerConfig, get_server_params
-from carlitos.llm import AgenticLLMToolSelector
+from carlitos.llm import LLMCoreAgent
 
 log = logging.getLogger("carlitos.agent")
 
@@ -27,7 +27,7 @@ class AgenticMCPAgent:
             config: Agent configuration
         """
         self.config = config
-        self.llm = AgenticLLMToolSelector(config.llm)
+        self.llm = LLMCoreAgent(config.llm)
         self.servers = {server.name: server for server in config.servers}
         self._last_tool_results = None  # Store last tool results for debugging
         self._server_tools_map = {}  # Will be populated during tool discovery

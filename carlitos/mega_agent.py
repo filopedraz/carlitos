@@ -6,7 +6,7 @@ import re
 from pydantic_ai import Agent
 
 from carlitos.agent import AgenticMCPAgent
-from carlitos.config import CarlitosConfig, ServerConfig
+from carlitos.config import CarlitosConfig
 from carlitos.prompt import (
     CLARIFICATION_QUESTION_PROMPT, 
     ROUTING_PROMPT, 

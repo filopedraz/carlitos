@@ -20,10 +20,11 @@ from carlitos.prompt import (
 log = logging.getLogger("carlitos.llm")
 
 
-class AgenticLLMToolSelector:
+class LLMCoreAgent:
     """
-    An agentic LLM tool selector that supports deliberate thinking 
-    about tasks and tools to use.
+    Core agent for Carlitos that handles LLM interactions.
+    Manages system prompts, task analysis, tool selection and result synthesis.
+    Uses PydanticAI with Gemini model as the underlying implementation.
     """
     
     def __init__(self, llm_config: LLMConfig):
