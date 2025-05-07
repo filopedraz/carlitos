@@ -8,7 +8,6 @@ from datetime import datetime
 from pydantic_ai import Agent
 from mcp import Tool
 
-from carlitos.config import LLMConfig
 from carlitos.prompt import (
     TASK_ANALYSIS_PROMPT, 
     SYNTHESIS_PROMPT, 
@@ -26,21 +25,21 @@ class LLMCoreAgent:
     Uses PydanticAI with Gemini model as the underlying implementation.
     """
     
-    def __init__(self, llm_config: LLMConfig):
+    def __init__(self, llm_config: Dict[str, Any]):
         """
         Initialize LLM client based on config.
         
         Args:
-            llm_config: LLM configuration
+            llm_config: LLM configuration dictionary
         """
         self.config = llm_config
-        self.model = llm_config.model
-        self.temperature = llm_config.temperature
+        self.model = llm_config["model"]
+        self.temperature = llm_config["temperature"]
         
         # Set API key from environment
-        os.environ["GEMINI_API_KEY"] = os.environ.get(llm_config.api_key_env, "")
+        os.environ["GEMINI_API_KEY"] = os.environ.get(llm_config["api_key_env"], "")
         if not os.environ["GEMINI_API_KEY"]:
-            raise ValueError(f"API key not found in environment variable {llm_config.api_key_env}")
+            raise ValueError(f"API key not found in environment variable {llm_config['api_key_env']}")
         
         # Initialize PydanticAI Agent
         model_name = f"google-gla:{self.model}"

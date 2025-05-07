@@ -1,13 +1,12 @@
 import logging
 import json
-from typing import Dict, NamedTuple
+from typing import Dict, NamedTuple, Any, List
 import re
-from typing import List
 
 from pydantic_ai import Agent
 
 from carlitos.agent import AgenticMCPAgent
-from carlitos.config import CarlitosConfig
+from carlitos.config import DEFAULT_LLM_CONFIG
 from carlitos.prompt import (
     CLARIFICATION_QUESTION_PROMPT, 
     ROUTING_PROMPT, 
@@ -30,12 +29,12 @@ class MegaAgent:
     Each sub-agent handles a specific integration (e.g., Gmail, Calendar, Slack).
     """
     
-    def __init__(self, config: CarlitosConfig):
+    def __init__(self, config: Dict[str, Any]):
         """
         Initialize the MegaAgent with configuration.
         
         Args:
-            config: Agent configuration
+            config: Agent configuration dictionary
         """
         self.config = config
         self.all_tools = None
@@ -47,15 +46,15 @@ class MegaAgent:
         self.chat_history = []  # Store chat history temporarily
         
         # Extract server descriptions from config
-        for server in config.servers:
-            if hasattr(server, 'description') and server.description:
-                self.server_descriptions[server.name] = server.description
+        for server in config["servers"]:
+            if "description" in server and server["description"]:
+                self.server_descriptions[server["name"]] = server["description"]
                 
                 # Also keep track of integration types
-                integration_type = self._get_integration_type(server.name)
+                integration_type = self._get_integration_type(server["name"])
                 self.integration_types.add(integration_type)
         
-        log.debug(f"Initialized MegaAgent with {len(config.servers)} potential servers")
+        log.debug(f"Initialized MegaAgent with {len(config['servers'])} potential servers")
     
     async def initialize_sub_agents(self):
         """
@@ -65,8 +64,8 @@ class MegaAgent:
         integration_servers = {}
         
         # Create filters for each integration type
-        for server in self.config.servers:
-            integration_type = self._get_integration_type(server.name)
+        for server in self.config["servers"]:
+            integration_type = self._get_integration_type(server["name"])
             if integration_type not in integration_servers:
                 integration_servers[integration_type] = []
             integration_servers[integration_type].append(server)
@@ -74,10 +73,10 @@ class MegaAgent:
         # Create a sub-agent for each integration type
         for integration_type, servers in integration_servers.items():
             # Create a filtered config for this integration
-            filtered_config = CarlitosConfig(
-                servers=servers,
-                llm=self.config.llm
-            )
+            filtered_config = {
+                "servers": servers,
+                "llm": DEFAULT_LLM_CONFIG  # Use the default LLM config from constants
+            }
             
             # Create the sub-agent
             self.sub_agents[integration_type] = AgenticMCPAgent(filtered_config)

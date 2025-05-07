@@ -11,9 +11,10 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from carlitos.mega_agent import MegaAgent
-from carlitos.config import DEBUG, VERBOSE, DEFAULT_CONFIG_PATH, load_config
+from carlitos.config import DEBUG, VERBOSE, DEFAULT_CONFIG
 
-log = logging.getLogger("carlitos")
+logger = logging.getLogger("carlitos")
+
 console = Console()
 
 app = typer.Typer(help="Carlitos - An agentic MCP client")
@@ -56,14 +57,14 @@ async def chat_loop(agent, debug=False):
                     
                     console.print(f"[bold green]Carlitos:{agent_info}[/bold green] {response}")
                 except Exception as e:
-                    log.error(f"Error processing message: {e}", exc_info=True)
+                    logger.error(f"Error processing message: {e}", exc_info=True)
                     console.print(f"[bold red]Error:[/bold red] {str(e)}")
                     console.print("[yellow]Please try again with a different query.[/yellow]")
         except KeyboardInterrupt:
             console.print("\n[bold green]Carlitos:[/bold green] Goodbye!")
             sys.exit(0)
         except Exception as e:
-            log.error(f"Error in chat loop: {e}", exc_info=True)
+            logger.error(f"Error in chat loop: {e}", exc_info=True)
             console.print(f"[bold red]Error:[/bold red] An unexpected error occurred: {str(e)}")
             console.print("[yellow]Chat loop will continue. You can still enter messages.[/yellow]")
 
@@ -127,11 +128,11 @@ async def discover_tools(agent):
             console.print("[bold cyan]Configured for on-demand tool discovery[/bold cyan]")
                 
         except Exception as e:
-            log.error(f"Error initializing agent: {e}", exc_info=True)
+            logger.error(f"Error initializing agent: {e}", exc_info=True)
             console.print(f"[bold red]Error initializing agent:[/bold red] {str(e)}")
 
 
-def run_chat(config_path=DEFAULT_CONFIG_PATH, verbose=VERBOSE, debug=DEBUG):
+def run_chat(verbose=VERBOSE, debug=DEBUG):
     """
     Implementation of the chat functionality.
     
@@ -142,18 +143,16 @@ def run_chat(config_path=DEFAULT_CONFIG_PATH, verbose=VERBOSE, debug=DEBUG):
     """
     # Set logging level
     if verbose or debug:
-        log.setLevel(logging.DEBUG)
+        logger.setLevel(logging.DEBUG)
         # Set all carlitos.* loggers to DEBUG level
         for logger_name in logging.root.manager.loggerDict:
             if logger_name.startswith("carlitos."):
                 logging.getLogger(logger_name).setLevel(logging.DEBUG)
     
     try:
-        # Load configuration using compatibility function
-        config = load_config(config_path)
         
         # Create and initialize MegaAgent
-        agent = MegaAgent(config)
+        agent = MegaAgent(DEFAULT_CONFIG)
         
         # Display welcome message
         console.print("[bold green]Carlitos Chat[/bold green]")
@@ -170,9 +169,6 @@ def run_chat(config_path=DEFAULT_CONFIG_PATH, verbose=VERBOSE, debug=DEBUG):
         # Run the chat loop
         asyncio.run(chat_loop(agent, debug))
         
-    except FileNotFoundError:
-        console.print(f"[bold red]Error:[/bold red] Config file not found at {config_path}")
-        sys.exit(1)
     except KeyboardInterrupt:
         console.print("\n[bold green]Carlitos:[/bold green] Goodbye!")
         sys.exit(0)
@@ -185,7 +181,6 @@ def run_chat(config_path=DEFAULT_CONFIG_PATH, verbose=VERBOSE, debug=DEBUG):
 
 @app.command()
 def chat(
-    config: str = "",
     verbose: bool = False,
     debug: bool = False
 ):
@@ -193,9 +188,7 @@ def chat(
     Start an interactive chat session with Carlitos.
     Exit with CTRL+C.
     """
-    # Use the default config path if none provided
-    config_path = config if config else DEFAULT_CONFIG_PATH
-    run_chat(config_path, verbose, debug)
+    run_chat(verbose, debug)
 
 
 @app.callback(invoke_without_command=True)

@@ -7,7 +7,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
 from rich.progress import Progress
 
-from carlitos.config import CarlitosConfig, ServerConfig, get_server_params
+from carlitos.utils import get_server_params
 from carlitos.llm import LLMCoreAgent
 
 log = logging.getLogger("carlitos.agent")
@@ -19,16 +19,17 @@ class AgenticMCPAgent:
     to tool selection and execution.
     """
     
-    def __init__(self, config: CarlitosConfig):
+    def __init__(self, config: Dict[str, Any]):
         """
         Initialize agentic agent with config.
         
         Args:
-            config: Agent configuration
+            config: Agent configuration dictionary
         """
         self.config = config
-        self.llm = LLMCoreAgent(config.llm)
-        self.servers = {server.name: server for server in config.servers}
+        self.llm = LLMCoreAgent(config["llm"])
+        # Create a dictionary of server name -> server config for easier access
+        self.servers = {server["name"]: server for server in config["servers"]}
         self._last_tool_results = None  # Store last tool results for debugging
         self._server_tools_map = {}  # Will be populated during tool discovery
         self.all_tools = None  # Cache the tools to avoid rediscovering on each message
@@ -113,7 +114,7 @@ class AgenticMCPAgent:
     
     async def _execute_with_session(
         self, 
-        server_config: ServerConfig, 
+        server_config: Dict[str, Any], 
         session_function: Callable[[ClientSession], Awaitable[Any]]
     ) -> Any:
         """
@@ -128,20 +129,20 @@ class AgenticMCPAgent:
         """
         server_params = get_server_params(server_config)
         
-        if server_config.transport == "stdio":
+        if server_config["transport"] == "stdio":
             client_factory = stdio_client
-        elif server_config.transport == "http":
+        elif server_config["transport"] == "http":
             client_factory = sse_client
             server_params = server_params  # For HTTP servers, params is just the URL string
         else:
-            raise ValueError(f"Unsupported transport: {server_config.transport}")
+            raise ValueError(f"Unsupported transport: {server_config['transport']}")
             
         async with client_factory(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 return await session_function(session)
     
-    async def _get_server_tools(self, server_config: ServerConfig) -> List[Tool]:
+    async def _get_server_tools(self, server_config: Dict[str, Any]) -> List[Tool]:
         """
         Get tools from a single server.
         
@@ -155,12 +156,12 @@ class AgenticMCPAgent:
             # Define the session function to list tools
             async def list_tools_function(session):
                 tools_response = await session.list_tools()
-                log.debug(f"Retrieved tools from {server_config.name}: {[tool.name for tool in tools_response.tools]}")
+                log.debug(f"Retrieved tools from {server_config['name']}: {[tool.name for tool in tools_response.tools]}")
                 return tools_response.tools
                 
             return await self._execute_with_session(server_config, list_tools_function)
         except Exception as e:
-            log.error(f"Error connecting to server {server_config.name}: {e}")
+            log.error(f"Error connecting to server {server_config['name']}: {e}")
             raise
     
     def _find_tool_and_server(self, tool_name: str, all_tools: List[Tool]) -> Tuple[Optional[Tool], Optional[str]]:
@@ -369,13 +370,13 @@ class AgenticMCPAgent:
             Agent response
         """
         # Get server descriptions for context if available
-        detailed_server_info = {server_name: server.description for server_name, server in self.servers.items() 
-                               if hasattr(server, 'description') and server.description}
+        detailed_server_info = {server_name: server["description"] for server_name, server in self.servers.items() 
+                               if "description" in server and server["description"]}
         
         # First, get the agent's thinking about what tools might be needed
         thinking, needed_tools = await self.llm.analyze_task(message, self.all_tools, chat_history, detailed_server_info)
         log.debug(f"Agent thinking: {thinking}")
-        log.info(f"Agent selected {len(needed_tools)} tools to use: {[t.get('name') for t in needed_tools]}")
+        log.info(f"Agent selected {len(needed_tools)} tools to use: {[t['name'] for t in needed_tools]}")
         
         # If the agent thinks no tools are needed, just return the thinking
         if not needed_tools:
@@ -386,7 +387,7 @@ class AgenticMCPAgent:
         tool_execution_details = []  # Store detailed info about what was executed
         
         for tool_info in needed_tools:
-            tool_name = tool_info.get("name")
+            tool_name = tool_info["name"]
             parameters = tool_info.get("parameters", {})
             purpose = tool_info.get("purpose", "No purpose specified")
             
