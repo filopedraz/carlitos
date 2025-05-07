@@ -346,16 +346,41 @@ class AgenticLLMToolSelector:
                             description = param_info.get("description", "")
                             is_required = param_name in required
                             
-                            param_str = f"    - {param_name} (Type: {param_type}"
-                            if is_required:
-                                param_str += ", Required"
-                            param_str += f"): {description}"
-                            params.append(param_str)
+                            # For objects like 'params', include their nested properties if available
+                            if param_type == "object" and "properties" in param_info:
+                                param_str = f"    - {param_name} (Type: {param_type}"
+                                if is_required:
+                                    param_str += ", Required"
+                                param_str += f"): {description}"
+                                params.append(param_str)
+                                
+                                # Add nested properties
+                                nested_properties = param_info.get("properties", {})
+                                nested_required = param_info.get("required", [])
+                                for nested_name, nested_info in nested_properties.items():
+                                    nested_type = nested_info.get("type", "unknown")
+                                    nested_desc = nested_info.get("description", "")
+                                    nested_required_str = ", Required" if nested_name in nested_required else ""
+                                    params.append(f"      • {nested_name} (Type: {nested_type}{nested_required_str}): {nested_desc}")
+                            else:
+                                param_str = f"    - {param_name} (Type: {param_type}"
+                                if is_required:
+                                    param_str += ", Required"
+                                param_str += f"): {description}"
+                                params.append(param_str)
                     else:
                         # Simpler format if schema doesn't match expected structure
-                        params.append(f"    Parameters: {json.dumps(tool.inputSchema)}")
+                        # For GoogleCalendar and similar APIs that use a generic 'params' object
+                        if hasattr(tool, 'parameterHints') and tool.parameterHints:
+                            # If there are parameter hints available, use them
+                            for param_name, param_hint in tool.parameterHints.items():
+                                params.append(f"    - {param_name}: {param_hint}")
+                        else:
+                            # Fallback to the raw inputSchema
+                            params.append(f"    Parameters: {json.dumps(tool.inputSchema)}")
                 except Exception as e:
                     # Fallback if parsing fails
+                    log.error(f"Error formatting tool parameters for {tool.name}: {e}")
                     params.append(f"    Parameters: {str(tool.inputSchema)}")
                 
                 if params:
@@ -363,4 +388,4 @@ class AgenticLLMToolSelector:
             
             formatted_tools.append(tool_info)
         
-        return "\n".join(formatted_tools) 
+        return "\n".join(formatted_tools)
