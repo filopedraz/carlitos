@@ -37,7 +37,6 @@ class MegaAgent:
         self.integration_types = set()
         self._current_agent_type = None  # Track the current agent being used
         self.chat_history = []  # Store chat history temporarily
-        self.user_id = "default"  # Default user ID
         
         # Extract server descriptions from config
         for server in config.servers:
@@ -93,22 +92,17 @@ class MegaAgent:
             return server_name.split('_')[0]
         return server_name
     
-    async def chat(self, message: str, user_id: str = None) -> str:
+    async def chat(self, message: str) -> str:
         """
         Process a chat message by routing to appropriate sub-agents.
         
         Args:
             message: User message
-            user_id: Optional user ID (defaults to self.user_id)
             
         Returns:
             Agent response
         """
         log.info(f"Processing chat message through MegaAgent: {message}")
-        
-        # Set user_id if provided
-        if user_id:
-            self.user_id = user_id
         
         # Add user message to chat history
         self.chat_history.append(ChatMessage(role="user", content=message))
