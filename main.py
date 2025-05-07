@@ -1,109 +1,22 @@
 #!/usr/bin/env python3
 import asyncio
-import logging
 import sys
 import signal
 import json
-
+import logging
 import typer
 from rich.console import Console
-from rich.logging import RichHandler
 from rich.prompt import Prompt
 from rich.panel import Panel
 from rich.syntax import Syntax
 
 from carlitos.mega_agent import MegaAgent
-from carlitos.config import load_config
+from carlitos.config import DEBUG, VERBOSE, DEFAULT_CONFIG_PATH, load_config
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    datefmt="[%X]",
-    handlers=[RichHandler(rich_tracebacks=True)]
-)
 log = logging.getLogger("carlitos")
-
 console = Console()
 
 app = typer.Typer(help="Carlitos - An agentic MCP client")
-
-# Default configuration path
-DEFAULT_CONFIG_PATH = "./.cursor/mcp.json"
-
-
-def run_chat(
-    config_path: str = DEFAULT_CONFIG_PATH,
-    verbose: bool = False,
-    debug: bool = False,
-):
-    """Implementation of the chat functionality."""
-    if verbose or debug:
-        log.setLevel(logging.DEBUG)
-        # Set all carlitos.* loggers to DEBUG level
-        for logger_name in logging.root.manager.loggerDict:
-            if logger_name.startswith("carlitos."):
-                logging.getLogger(logger_name).setLevel(logging.DEBUG)
-    
-    try:
-        # Load configuration
-        log.debug(f"Loading config from {config_path}")
-        config = load_config(config_path)
-        
-        # Create MegaAgent
-        agent = MegaAgent(config)
-        console.print("[bold green]Carlitos Chat[/bold green]")
-        console.print("[dim]Press CTRL+C to exit[/dim]")
-        console.print("[bold cyan]Using MegaAgent to route requests to specialized sub-agents[/bold cyan]")
-        
-        # Set up signal handler for graceful exit
-        def handle_sigint(sig, frame):
-            console.print("\n[bold green]Carlitos:[/bold green] Goodbye!")
-            sys.exit(0)
-        
-        signal.signal(signal.SIGINT, handle_sigint)
-        
-        # Create and run the asyncio event loop
-        asyncio.run(chat_loop(agent, debug))
-        
-    except FileNotFoundError:
-        console.print(f"[bold red]Error:[/bold red] Config file not found at {config_path}")
-        sys.exit(1)
-    except KeyboardInterrupt:
-        console.print("\n[bold green]Carlitos:[/bold green] Goodbye!")
-        sys.exit(0)
-    except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {str(e)}")
-        if verbose or debug:
-            console.print_exception()
-        sys.exit(1)
-
-
-@app.command()
-def chat(
-    config_path: str = typer.Option(
-        DEFAULT_CONFIG_PATH, 
-        "--config", 
-        "-c", 
-        help="Path to MCP configuration file"
-    ),
-    verbose: bool = typer.Option(
-        False, 
-        "--verbose", 
-        "-v", 
-        help="Enable verbose output"
-    ),
-    debug: bool = typer.Option(
-        False,
-        "--debug",
-        "-d",
-        help="Enable debug logging level and show raw tool responses"
-    ),
-):
-    """
-    Start an interactive chat session with Carlitos.
-    Exit with CTRL+C.
-    """
-    run_chat(config_path, verbose, debug)
 
 
 async def chat_loop(agent, debug=False):
@@ -114,7 +27,7 @@ async def chat_loop(agent, debug=False):
         agent: The MegaAgent instance
         debug: Whether to show raw tool responses
     """
-    # First discover tools once to initialize the agent
+    # First discover tools
     await discover_tools(agent)
     
     # Main chat loop
@@ -129,45 +42,9 @@ async def chat_loop(agent, debug=False):
                     # Process the chat message
                     response = await agent.chat(user_input)
                     
-                    # In debug mode, check if there are tool results and display them
+                    # Debug output if enabled
                     if debug and hasattr(agent, "_last_tool_results"):
-                        console.print("[bold yellow]Debug - Raw Tool Results:[/bold yellow]")
-                        
-                        # Try to parse as JSON for nicer formatting
-                        try:
-                            if isinstance(agent._last_tool_results, str) and agent._last_tool_results.startswith("{"):
-                                result_json = json.loads(agent._last_tool_results)
-                                formatted_json = json.dumps(result_json, indent=2)
-                                console.print(Syntax(formatted_json, "json", theme="monokai", word_wrap=True))
-                            elif isinstance(agent._last_tool_results, str) and agent._last_tool_results.startswith("EXECUTION SUMMARY"):
-                                # Split into sections for better readability
-                                parts = agent._last_tool_results.split("\n\nRESULTS:\n")
-                                if len(parts) == 2:
-                                    console.print(Panel(parts[0], title="Execution Summary", border_style="yellow"))
-                                    console.print(Panel(parts[1][:1000] + "..." if len(parts[1]) > 1000 else parts[1], 
-                                                       title="Results", border_style="green"))
-                                else:
-                                    console.print(agent._last_tool_results)
-                            else:
-                                console.print(agent._last_tool_results)
-                        except json.JSONDecodeError:
-                            console.print(agent._last_tool_results)
-                        
-                        # If using a sub-agent, try to get its tool results too
-                        if hasattr(agent, "_current_agent_type") and agent._current_agent_type:
-                            if agent._current_agent_type in agent.sub_agents:
-                                sub_agent = agent.sub_agents[agent._current_agent_type]
-                                if hasattr(sub_agent, "_last_tool_results") and sub_agent._last_tool_results:
-                                    console.print(f"[bold magenta]Debug - {agent._current_agent_type} Sub-Agent Tool Results:[/bold magenta]")
-                                    try:
-                                        if isinstance(sub_agent._last_tool_results, str) and sub_agent._last_tool_results.startswith("{"):
-                                            result_json = json.loads(sub_agent._last_tool_results)
-                                            formatted_json = json.dumps(result_json, indent=2)
-                                            console.print(Syntax(formatted_json, "json", theme="monokai", word_wrap=True))
-                                        else:
-                                            console.print(sub_agent._last_tool_results)
-                                    except json.JSONDecodeError:
-                                        console.print(sub_agent._last_tool_results)
+                        display_debug_info(agent)
                     
                     # Display which agent was used
                     agent_info = ""
@@ -191,6 +68,47 @@ async def chat_loop(agent, debug=False):
             console.print("[yellow]Chat loop will continue. You can still enter messages.[/yellow]")
 
 
+def display_debug_info(agent):
+    """Display debug information about tool execution."""
+    console.print("[bold yellow]Debug - Raw Tool Results:[/bold yellow]")
+    
+    # Try to parse as JSON for nicer formatting
+    try:
+        if isinstance(agent._last_tool_results, str) and agent._last_tool_results.startswith("{"):
+            result_json = json.loads(agent._last_tool_results)
+            formatted_json = json.dumps(result_json, indent=2)
+            console.print(Syntax(formatted_json, "json", theme="monokai", word_wrap=True))
+        elif isinstance(agent._last_tool_results, str) and agent._last_tool_results.startswith("EXECUTION SUMMARY"):
+            # Split into sections for better readability
+            parts = agent._last_tool_results.split("\n\nRESULTS:\n")
+            if len(parts) == 2:
+                console.print(Panel(parts[0], title="Execution Summary", border_style="yellow"))
+                console.print(Panel(parts[1][:1000] + "..." if len(parts[1]) > 1000 else parts[1], 
+                                   title="Results", border_style="green"))
+            else:
+                console.print(agent._last_tool_results)
+        else:
+            console.print(agent._last_tool_results)
+    except json.JSONDecodeError:
+        console.print(agent._last_tool_results)
+    
+    # If using a sub-agent, try to get its tool results too
+    if hasattr(agent, "_current_agent_type") and agent._current_agent_type:
+        if agent._current_agent_type in agent.sub_agents:
+            sub_agent = agent.sub_agents[agent._current_agent_type]
+            if hasattr(sub_agent, "_last_tool_results") and sub_agent._last_tool_results:
+                console.print(f"[bold magenta]Debug - {agent._current_agent_type} Sub-Agent Tool Results:[/bold magenta]")
+                try:
+                    if isinstance(sub_agent._last_tool_results, str) and sub_agent._last_tool_results.startswith("{"):
+                        result_json = json.loads(sub_agent._last_tool_results)
+                        formatted_json = json.dumps(result_json, indent=2)
+                        console.print(Syntax(formatted_json, "json", theme="monokai", word_wrap=True))
+                    else:
+                        console.print(sub_agent._last_tool_results)
+                except json.JSONDecodeError:
+                    console.print(sub_agent._last_tool_results)
+
+
 async def discover_tools(agent):
     """
     Discover tools for the agent.
@@ -200,18 +118,84 @@ async def discover_tools(agent):
     """
     with console.status("[cyan]Discovering tools...[/cyan]", spinner="dots"):
         try:
-            # First initialize sub-agents based on server descriptions
+            # Initialize sub-agents based on server descriptions
             if not agent.sub_agents:
                 await agent.initialize_sub_agents()
                 console.print(f"[bold cyan]Initialized {len(agent.sub_agents)} specialized sub-agents[/bold cyan]")
                 
-            # Only discover all tools when needed (defer until necessary)
-            # This avoids token limit issues by not loading all tool details during startup
+            # Defer tool discovery until necessary
             console.print("[bold cyan]Configured for on-demand tool discovery[/bold cyan]")
                 
         except Exception as e:
             log.error(f"Error initializing agent: {e}", exc_info=True)
             console.print(f"[bold red]Error initializing agent:[/bold red] {str(e)}")
+
+
+def run_chat(config_path=DEFAULT_CONFIG_PATH, verbose=VERBOSE, debug=DEBUG):
+    """
+    Implementation of the chat functionality.
+    
+    Args:
+        config_path: Path to the config file
+        verbose: Whether to enable verbose output
+        debug: Whether to enable debug mode
+    """
+    # Set logging level
+    if verbose or debug:
+        log.setLevel(logging.DEBUG)
+        # Set all carlitos.* loggers to DEBUG level
+        for logger_name in logging.root.manager.loggerDict:
+            if logger_name.startswith("carlitos."):
+                logging.getLogger(logger_name).setLevel(logging.DEBUG)
+    
+    try:
+        # Load configuration using compatibility function
+        config = load_config(config_path)
+        
+        # Create and initialize MegaAgent
+        agent = MegaAgent(config)
+        
+        # Display welcome message
+        console.print("[bold green]Carlitos Chat[/bold green]")
+        console.print("[dim]Press CTRL+C to exit[/dim]")
+        console.print("[bold cyan]Using MegaAgent to route requests to specialized sub-agents[/bold cyan]")
+        
+        # Set up signal handler for graceful exit
+        def handle_sigint(sig, frame):
+            console.print("\n[bold green]Carlitos:[/bold green] Goodbye!")
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, handle_sigint)
+        
+        # Run the chat loop
+        asyncio.run(chat_loop(agent, debug))
+        
+    except FileNotFoundError:
+        console.print(f"[bold red]Error:[/bold red] Config file not found at {config_path}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        console.print("\n[bold green]Carlitos:[/bold green] Goodbye!")
+        sys.exit(0)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {str(e)}")
+        if verbose or debug:
+            console.print_exception()
+        sys.exit(1)
+
+
+@app.command()
+def chat(
+    config: str = "",
+    verbose: bool = False,
+    debug: bool = False
+):
+    """
+    Start an interactive chat session with Carlitos.
+    Exit with CTRL+C.
+    """
+    # Use the default config path if none provided
+    config_path = config if config else DEFAULT_CONFIG_PATH
+    run_chat(config_path, verbose, debug)
 
 
 @app.callback(invoke_without_command=True)
@@ -220,7 +204,7 @@ def main(ctx: typer.Context):
     Start chat mode when no command is provided.
     """
     if ctx.invoked_subcommand is None:
-        run_chat()
+        chat()
 
 
 if __name__ == "__main__":

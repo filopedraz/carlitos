@@ -1,192 +1,227 @@
-import json
-import logging
 import os
+import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from mcp import StdioServerParameters
-from pydantic import BaseModel, Field, model_validator
+from rich.logging import RichHandler
 
+# Load environment variables from .env file
 load_dotenv()
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler(rich_tracebacks=True)]
+)
 log = logging.getLogger("carlitos.config")
 
+# Basic configuration
+DEBUG = os.environ.get("DEBUG", "False").lower() in ("true", "1", "t")
+VERBOSE = os.environ.get("VERBOSE", "False").lower() in ("true", "1", "t")
 
-class ServerConfig(BaseModel):
-    """MCP server configuration."""
+# Default paths
+DEFAULT_CONFIG_PATH = "./.cursor/mcp.json"
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# LLM configuration
+LLM_PROVIDER = "gemini"  # Only supporting Gemini currently
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-2.5-flash-preview-04-17")
+LLM_API_KEY_ENV = os.environ.get("LLM_API_KEY_ENV", "GEMINI_API_KEY")
+LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
+
+# Servers will be loaded dynamically from config file
+SERVERS = []
+
+# Compatibility classes for backward compatibility
+@dataclass
+class ServerConfig:
+    """MCP server configuration with backward compatibility."""
     name: str
     transport: str = "stdio"  # "stdio" or "http"
     command: Optional[str] = None
-    args: List[str] = Field(default_factory=list)
+    args: List[str] = None
     url: Optional[str] = None
-    env: Dict[str, str] = Field(default_factory=dict)
+    env: Dict[str, str] = None
     description: str = ""
     
-    @model_validator(mode='after')
-    def validate_server_config(self):
-        """Validate server configuration based on transport type."""
-        if self.transport == "stdio" and not self.command:
-            raise ValueError("Command must be provided for stdio transport")
-        elif self.transport == "http" and not self.url:
-            raise ValueError("URL must be provided for http transport")
-        return self
+    def __post_init__(self):
+        if self.args is None:
+            self.args = []
+        if self.env is None:
+            self.env = {}
 
-
-class LLMConfig(BaseModel):
-    """LLM configuration for tool selection."""
-    provider: str = "gemini"  # Only supporting Gemini with PydanticAI
+@dataclass
+class LLMConfig:
+    """LLM configuration with backward compatibility."""
+    provider: str = "gemini"
     model: str = "gemini-2.5-flash-preview-04-17"
     api_key_env: str = "GEMINI_API_KEY"
     temperature: float = 0.2
-    
-    @model_validator(mode='before')
-    def validate_provider(cls, data):
-        if isinstance(data, dict) and "provider" in data:
-            provider = data["provider"]
-            if provider != "gemini":
-                raise ValueError(f"Provider {provider} not supported. Only 'gemini' is supported.")
-        return data
 
-
-class CarlitosConfig(BaseModel):
-    """Main configuration for Carlitos."""
+@dataclass
+class CarlitosConfig:
+    """Main configuration for Carlitos with backward compatibility."""
     servers: List[ServerConfig]
     llm: LLMConfig
 
-
-def get_llm_config_from_env() -> LLMConfig:
-    """
-    Get LLM configuration from environment variables with defaults.
+def load_servers_from_config(config_path=DEFAULT_CONFIG_PATH):
+    """Load server configurations from a JSON file."""
+    import json
     
-    Returns:
-        LLM configuration
-    """
-    return LLMConfig(
-        provider="gemini",  # Only supporting Gemini
-        model=os.environ.get("LLM_MODEL", "gemini-2.5-flash-preview-04-17"),
-        api_key_env=os.environ.get("LLM_API_KEY_ENV", "GEMINI_API_KEY"),
-        temperature=float(os.environ.get("LLM_TEMPERATURE", "0.2"))
-    )
+    path = Path(config_path)
+    if not path.exists():
+        log.warning(f"Config file not found: {config_path}")
+        return []
+    
+    try:
+        with open(path, "r") as f:
+            config = json.load(f)
+        
+        servers = []
+        
+        # Support MCP style config format
+        if "mcpServers" in config:
+            for name, server_data in config["mcpServers"].items():
+                server_data["name"] = name
+                servers.append(server_data)
+        # Support original format
+        elif "servers" in config:
+            servers = config["servers"]
+        else:
+            log.warning("Invalid config: missing 'mcpServers' or 'servers' key")
+            return []
+        
+        log.debug(f"Loaded {len(servers)} servers from config")
+        return servers
+        
+    except (json.JSONDecodeError, FileNotFoundError) as e:
+        log.warning(f"Error loading config: {e}")
+        return []
 
+def get_server_params(server_config):
+    """Convert server config to MCP server parameters."""
+    if isinstance(server_config, dict):
+        name = server_config.get("name", "unknown")
+        transport = server_config.get("transport")
+        
+        # Determine transport type if not specified
+        if not transport:
+            if "command" in server_config:
+                transport = "stdio"
+            elif "url" in server_config:
+                transport = "http"
+            else:
+                log.warning(f"Server {name} has no transport specified and no command/URL")
+                return None
+        
+        # Return the appropriate parameters based on transport type
+        if transport == "stdio":
+            command = server_config.get("command")
+            if not command:
+                log.warning(f"Server {name} has no command specified")
+                return None
+                
+            return StdioServerParameters(
+                command=command,
+                args=server_config.get("args", []),
+                env=server_config.get("env", {})
+            )
+        elif transport == "http":
+            url = server_config.get("url")
+            if not url:
+                log.warning(f"Server {name} has no URL specified")
+                return None
+                
+            return url
+        else:
+            log.warning(f"Unsupported transport: {transport}")
+            return None
+    else:
+        # Handle ServerConfig object
+        if server_config.transport == "stdio":
+            if not server_config.command:
+                log.warning(f"Server {server_config.name} has no command specified")
+                return None
+            return StdioServerParameters(
+                command=server_config.command,
+                args=server_config.args,
+                env=server_config.env
+            )
+        elif server_config.transport == "http":
+            if not server_config.url:
+                log.warning(f"Server {server_config.name} has no URL specified")
+                return None
+            return server_config.url
+        else:
+            log.warning(f"Unsupported transport: {server_config.transport}")
+            return None
 
-def load_config(config_path: str = "./.cursor/mcp.json") -> CarlitosConfig:
+# Simple function to get LLM config as a dictionary
+def get_llm_config():
+    """Get LLM configuration as a dictionary."""
+    return {
+        "provider": LLM_PROVIDER,
+        "model": LLM_MODEL,
+        "api_key_env": LLM_API_KEY_ENV,
+        "temperature": LLM_TEMPERATURE
+    }
+
+# Compatibility function to load config
+def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> CarlitosConfig:
     """
-    Load configuration from JSON file.
+    Load configuration from JSON file with backward compatibility.
     
     Args:
         config_path: Path to configuration file
         
     Returns:
-        Parsed configuration
-        
-    Raises:
-        FileNotFoundError: If config file doesn't exist
-        ValueError: If config is invalid
+        Parsed configuration in CarlitosConfig format
     """
-    path = Path(config_path)
+    server_dicts = load_servers_from_config(config_path)
     
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
+    # Convert dictionaries to ServerConfig objects
+    server_configs = []
+    for server_dict in server_dicts:
+        name = server_dict.get("name", "unknown")
+        transport = server_dict.get("transport")
+        
+        # Determine transport if not specified
+        if not transport:
+            if "command" in server_dict:
+                transport = "stdio"
+            elif "url" in server_dict:
+                transport = "http"
+            else:
+                log.warning(f"Skipping server {name} - no command or URL specified")
+                continue
+        
+        server_configs.append(ServerConfig(
+            name=name,
+            transport=transport,
+            command=server_dict.get("command"),
+            args=server_dict.get("args", []),
+            url=server_dict.get("url"),
+            env=server_dict.get("env", {}),
+            description=server_dict.get("description", "")
+        ))
     
-    try:
-        with open(path, "r") as f:
-            raw_config = json.load(f)
-        
-        # Get LLM config from environment or use defaults
-        llm_config = get_llm_config_from_env()
-        
-        # Convert MCP style JSON to our expected format
-        if "mcpServers" in raw_config:
-            servers = []
-            for name, server_data in raw_config["mcpServers"].items():
-                # Add name to server data
-                server_data["name"] = name
-                
-                # Determine transport type based on data
-                if "command" in server_data:
-                    server_data["transport"] = "stdio"
-                elif "url" in server_data:
-                    server_data["transport"] = "http"
-                else:
-                    log.warning(f"Skipping server {name} - no command or URL specified")
-                    continue
-                
-                try:
-                    servers.append(ServerConfig(**server_data))
-                    log.debug(f"Added server {name} with {server_data['transport']} transport")
-                except Exception as e:
-                    log.warning(f"Invalid server configuration for {name}: {e}")
-            
-            config = CarlitosConfig(
-                servers=servers,
-                llm=llm_config
-            )
-        # Support our original format too
-        elif "servers" in raw_config:
-            servers = []
-            for server_data in raw_config["servers"]:
-                name = server_data.get("name", "unknown")
-                
-                # Determine transport type based on data
-                if "command" in server_data:
-                    server_data["transport"] = "stdio"
-                elif "url" in server_data:
-                    server_data["transport"] = "http"
-                else:
-                    log.warning(f"Skipping server {name} - no command or URL specified")
-                    continue
-                
-                try:
-                    servers.append(ServerConfig(**server_data))
-                    log.debug(f"Added server {name} with {server_data['transport']} transport")
-                except Exception as e:
-                    log.warning(f"Invalid server configuration for {name}: {e}")
-            
-            # If llm config exists in file, use it, otherwise use env variables
-            if "llm" in raw_config:
-                file_llm_config = raw_config["llm"]
-                # Ensure provider is gemini
-                file_llm_config["provider"] = "gemini"
-                llm_config = LLMConfig(**file_llm_config)
-            
-            config = CarlitosConfig(
-                servers=servers,
-                llm=llm_config
-            )
-        else:
-            raise ValueError("Invalid config: missing 'mcpServers' or 'servers' key")
-            
-        log.debug(f"Loaded config with {len(config.servers)} servers")
-        return config
-        
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON in config file: {e}")
-    except Exception as e:
-        raise ValueError(f"Invalid config: {e}")
+    # Create LLMConfig from environment or defaults
+    llm_config = LLMConfig(
+        provider=LLM_PROVIDER,
+        model=LLM_MODEL,
+        api_key_env=LLM_API_KEY_ENV,
+        temperature=LLM_TEMPERATURE
+    )
+    
+    return CarlitosConfig(
+        servers=server_configs,
+        llm=llm_config
+    )
 
-
-def get_server_params(server_config: ServerConfig) -> Union[StdioServerParameters, str]:
-    """
-    Convert server config to MCP server parameters.
-    
-    Args:
-        server_config: Server configuration
-        
-    Returns:
-        MCP server parameters or URL for HTTP transport
-    """
-    if server_config.transport == "stdio":
-        if not server_config.command:
-            raise ValueError(f"Server {server_config.name} has no command specified")
-        return StdioServerParameters(
-            command=server_config.command,
-            args=server_config.args,
-            env=server_config.env
-        )
-    elif server_config.transport == "http":
-        if not server_config.url:
-            raise ValueError(f"Server {server_config.name} has no URL specified")
-        return server_config.url
-    else:
-        raise ValueError(f"Unsupported transport: {server_config.transport}") 
+# Load servers on module import
+SERVERS = load_servers_from_config() 
