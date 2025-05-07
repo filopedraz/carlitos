@@ -407,11 +407,6 @@ class AgenticMCPAgent:
             tool_results = "\n\n".join(results)
             log.debug(f"All tool results: {tool_results[:500]}...")
             
-            # Add special instruction to prevent fabricating data using the constant from prompt.py
-            if "no data" in tool_results.lower() or "no content" in tool_results.lower() or "empty" in tool_results.lower() or "error" in tool_results.lower():
-                log.info("Adding NO_DATA_INSTRUCTION to tool results since no valid data was found")
-                tool_results = f"{tool_results}\n\n{NO_DATA_INSTRUCTION}"
-            
             # Add information about which tools were executed and with what parameters
             execution_summary = "\n".join(tool_execution_details)
             tool_results = f"Tool execution summary:\n{execution_summary}\n\n{tool_results}"
