@@ -34,18 +34,18 @@ class ServerConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    """LLM configuration for tool selection using OpenAI."""
-    provider: str = "openai"  # Only support OpenAI
-    model: str
-    api_key_env: str = "OPENAI_API_KEY"
+    """LLM configuration for tool selection."""
+    provider: str = "gemini"  # Only supporting Gemini with PydanticAI
+    model: str = "gemini-2.5-flash-preview-04-17"
+    api_key_env: str = "GEMINI_API_KEY"
     temperature: float = 0.2
     
     @model_validator(mode='before')
     def validate_provider(cls, data):
         if isinstance(data, dict) and "provider" in data:
             provider = data["provider"]
-            if provider != "openai":
-                raise ValueError(f"Provider {provider} not supported. Only 'openai' is supported.")
+            if provider != "gemini":
+                raise ValueError(f"Provider {provider} not supported. Only 'gemini' is supported.")
         return data
 
 
@@ -63,9 +63,9 @@ def get_llm_config_from_env() -> LLMConfig:
         LLM configuration
     """
     return LLMConfig(
-        provider="openai",  # Only support OpenAI
-        model=os.environ.get("LLM_MODEL", "gpt-4o"),
-        api_key_env=os.environ.get("LLM_API_KEY_ENV", "OPENAI_API_KEY"),
+        provider="gemini",  # Only supporting Gemini
+        model=os.environ.get("LLM_MODEL", "gemini-2.5-flash-preview-04-17"),
+        api_key_env=os.environ.get("LLM_API_KEY_ENV", "GEMINI_API_KEY"),
         temperature=float(os.environ.get("LLM_TEMPERATURE", "0.2"))
     )
 
@@ -146,8 +146,8 @@ def load_config(config_path: str = "./.cursor/mcp.json") -> CarlitosConfig:
             # If llm config exists in file, use it, otherwise use env variables
             if "llm" in raw_config:
                 file_llm_config = raw_config["llm"]
-                # Ensure provider is openai
-                file_llm_config["provider"] = "openai"
+                # Ensure provider is gemini
+                file_llm_config["provider"] = "gemini"
                 llm_config = LLMConfig(**file_llm_config)
             
             config = CarlitosConfig(

@@ -1,5 +1,5 @@
 mcp==1.7.1
-openai==1.77.0
+pydantic-ai==0.1.10
 pydantic==2.11.4
 typer==0.15.3
 rich==14.0.0

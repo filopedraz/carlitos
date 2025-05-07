@@ -5,11 +5,17 @@ import re
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 
-from langfuse.openai import openai
+from pydantic_ai import Agent
 from mcp import Tool
 
 from carlitos.config import LLMConfig
-from carlitos.prompt import TASK_ANALYSIS_PROMPT, SYNTHESIS_PROMPT, TOOL_SELECTION_PROMPT
+from carlitos.prompt import (
+    TASK_ANALYSIS_PROMPT, 
+    SYNTHESIS_PROMPT, 
+    TOOL_SELECTION_PROMPT,
+    CARLITOS_SYSTEM_PROMPT,
+    TASK_ANALYSIS_SYSTEM_PROMPT
+)
 
 log = logging.getLogger("carlitos.llm")
 
@@ -28,18 +34,21 @@ class AgenticLLMToolSelector:
             llm_config: LLM configuration
         """
         self.config = llm_config
-        self.provider = "openai"  # Only support OpenAI
         self.model = llm_config.model
         self.temperature = llm_config.temperature
         
         # Set API key from environment
-        api_key = os.environ.get(llm_config.api_key_env)
-        if not api_key:
+        os.environ["GEMINI_API_KEY"] = os.environ.get(llm_config.api_key_env, "")
+        if not os.environ["GEMINI_API_KEY"]:
             raise ValueError(f"API key not found in environment variable {llm_config.api_key_env}")
         
-        # Initialize OpenAI client
-        self.client = openai.OpenAI(api_key=api_key)
-        log.debug(f"Initialized OpenAI client with model {self.model}")
+        # Initialize PydanticAI Agent
+        model_name = f"google-gla:{self.model}"
+        self.client = Agent(
+            model_name,
+            system_prompt=CARLITOS_SYSTEM_PROMPT
+        )
+        log.debug(f"Initialized PydanticAI Agent with model {model_name}")
     
     def _clean_json_response(self, response: str) -> str:
         """
@@ -78,11 +87,13 @@ class AgenticLLMToolSelector:
         # Create prompt for tool selection
         prompt = self._get_tool_selection_prompt(query, available_tools)
         
-        log.debug(f"Sending prompt to OpenAI")
+        log.debug(f"Sending prompt to PydanticAI")
         
         try:
-            # Get response from OpenAI
-            response = self._get_openai_response(prompt)
+            # Get response from PydanticAI
+            # Only pass the query part as the message, as we've set the system prompt during initialization
+            result = await self.client.run(prompt, temperature=self.temperature)
+            response = result.output
             
             # Clean response from code blocks  
             cleaned_response = self._clean_json_response(response)
@@ -141,11 +152,16 @@ class AgenticLLMToolSelector:
             chat_history_formatted
         )
         
-        log.debug(f"Sending task analysis prompt to OpenAI")
+        log.debug(f"Sending task analysis prompt to PydanticAI")
         
         try:
-            # Get response from OpenAI
-            response = self._get_openai_response(prompt)
+            # Get response from PydanticAI
+            agent_for_task = Agent(
+                f"google-gla:{self.model}",
+                system_prompt=TASK_ANALYSIS_SYSTEM_PROMPT
+            )
+            result = await agent_for_task.run(prompt, temperature=self.temperature)
+            response = result.output
             
             # Clean response from code blocks
             cleaned_response = self._clean_json_response(response)
@@ -204,11 +220,16 @@ class AgenticLLMToolSelector:
             current_datetime=current_datetime
         )
         
-        log.debug(f"Sending synthesis prompt to OpenAI with {len(tool_results)} chars of tool results")
+        log.debug(f"Sending synthesis prompt to PydanticAI with {len(tool_results)} chars of tool results")
         
         try:
-            # Get response from OpenAI
-            response = self._get_openai_synthesis_response(prompt)
+            # Get response from PydanticAI
+            agent_for_synthesis = Agent(
+                f"google-gla:{self.model}",
+                system_prompt=CARLITOS_SYSTEM_PROMPT
+            )
+            result = await agent_for_synthesis.run(prompt, temperature=self.temperature)
+            response = result.output
             
             return response
             
@@ -216,27 +237,6 @@ class AgenticLLMToolSelector:
             log.error(f"Error in result synthesis: {e}")
             # Fallback response
             return f"I've processed your request, but encountered an error when formatting the results: {str(e)}. Here's the raw data: {tool_results}"
-    
-    def _get_openai_response(self, prompt: str) -> str:
-        """
-        Get response from OpenAI.
-        
-        Args:
-            prompt: The prompt to send
-            
-        Returns:
-            Response text
-        """
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant that analyzes tasks and selects appropriate tools to execute them."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=self.temperature,
-        )
-        
-        return response.choices[0].message.content
     
     def _get_tool_selection_prompt(self, query: str, available_tools: List[Tool]) -> str:
         """
@@ -295,27 +295,6 @@ class AgenticLLMToolSelector:
             chat_history_formatted=chat_history_formatted,
             current_datetime=current_datetime
         )
-    
-    def _get_openai_synthesis_response(self, prompt: str) -> str:
-        """
-        Get synthesis response from OpenAI.
-        
-        Args:
-            prompt: The prompt to send
-            
-        Returns:
-            Response text
-        """
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant that synthesizes tool results to answer user queries."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=self.temperature,
-        )
-        
-        return response.choices[0].message.content
     
     def _format_tools(self, available_tools: List[Tool]) -> str:
         """

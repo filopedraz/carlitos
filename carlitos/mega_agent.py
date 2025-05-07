@@ -3,9 +3,16 @@ import json
 from typing import Dict, NamedTuple
 import re
 
+from pydantic_ai import Agent
+
 from carlitos.agent import AgenticMCPAgent
 from carlitos.config import CarlitosConfig, ServerConfig
-from carlitos.prompt import CLARIFICATION_QUESTION_PROMPT, ROUTING_PROMPT
+from carlitos.prompt import (
+    CLARIFICATION_QUESTION_PROMPT, 
+    ROUTING_PROMPT, 
+    CLARIFICATION_SYSTEM_PROMPT, 
+    ROUTING_SYSTEM_PROMPT
+)
 
 log = logging.getLogger("carlitos.mega_agent")
 
@@ -166,10 +173,9 @@ class MegaAgent:
         Returns:
             A clarifying question
         """
-        # Get a client to make the request
-        client = self.sub_agents[next(iter(self.sub_agents))].llm.client
-        model = self.sub_agents[next(iter(self.sub_agents))].llm.model
+        # Get temperature from the main config
         temperature = self.sub_agents[next(iter(self.sub_agents))].llm.temperature
+        model_name = f"google-gla:{self.sub_agents[next(iter(self.sub_agents))].llm.model}"
         
         # Format chat history for context
         formatted_history = self._format_chat_history()
@@ -182,16 +188,15 @@ class MegaAgent:
         )
         
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that asks clarifying questions to understand user needs."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temperature,
+            # Create a dedicated agent with the proper system prompt for clarification
+            clarification_agent = Agent(
+                model_name,
+                system_prompt=CLARIFICATION_SYSTEM_PROMPT
             )
             
-            return response.choices[0].message.content
+            result = await clarification_agent.run(prompt, temperature=temperature)
+            
+            return result.output
             
         except Exception as e:
             log.error(f"Error generating clarification question: {e}")
@@ -261,23 +266,22 @@ class MegaAgent:
             integrations_descriptions=self._format_integration_descriptions()
         )
         
-        # Use the LLM from the main config
-        client = self.sub_agents[next(iter(self.sub_agents))].llm.client
-        model = self.sub_agents[next(iter(self.sub_agents))].llm.model
+        # Get config from the first sub-agent
         temperature = self.sub_agents[next(iter(self.sub_agents))].llm.temperature
+        model_name = f"google-gla:{self.sub_agents[next(iter(self.sub_agents))].llm.model}"
         
         try:
             log.info("Performing lightweight routing based on integration descriptions")
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are a helpful AI assistant that routes requests to the appropriate integrations."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temperature,
+            
+            # Create a dedicated agent with the proper system prompt for routing
+            routing_agent = Agent(
+                model_name,
+                system_prompt=ROUTING_SYSTEM_PROMPT
             )
             
-            response_text = response.choices[0].message.content
+            result = await routing_agent.run(prompt, temperature=temperature)
+            
+            response_text = result.output
             
             # Clean response from code blocks
             response_text = self._clean_json_response(response_text)

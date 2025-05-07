@@ -9,7 +9,6 @@ from rich.progress import Progress
 
 from carlitos.config import CarlitosConfig, ServerConfig, get_server_params
 from carlitos.llm import AgenticLLMToolSelector
-from carlitos.prompt import NO_DATA_INSTRUCTION
 
 log = logging.getLogger("carlitos.agent")
 
