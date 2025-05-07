@@ -34,12 +34,13 @@ class AgenticMCPAgent:
         self.all_tools = None  # Cache the tools to avoid rediscovering on each message
         log.debug(f"Initialized agent with {len(self.servers)} servers")
         
-    async def chat(self, message: str) -> str:
+    async def chat(self, message: str, chat_history: Optional[List[Dict[str, str]]] = None) -> str:
         """
         Process a message in a chat session.
         
         Args:
             message: User message
+            chat_history: Optional chat history for context
             
         Returns:
             Agent response
@@ -54,24 +55,25 @@ class AgenticMCPAgent:
         
         # Get agentic response with thinking and tool selection
         try:
-            result = await self._process_chat_message(message)
+            result = await self._process_chat_message(message, chat_history)
             return result
         except Exception as e:
             log.error(f"Error in chat processing: {e}", exc_info=True)
             return f"I encountered an error while processing your request: {str(e)} - I cannot provide the requested information at this time."
         
-    async def run(self, query: str) -> str:
+    async def run(self, query: str, chat_history: Optional[List[Dict[str, str]]] = None) -> str:
         """
         Run the agent with a one-shot query.
         
         Args:
             query: User query
+            chat_history: Optional chat history for context
             
         Returns:
             Agent response
         """
         # Simply delegate to the chat method
-        return await self.chat(query)
+        return await self.chat(query, chat_history)
     
     async def _discover_tools(self, progress: Optional[Progress] = None) -> List[Tool]:
         """
@@ -355,18 +357,23 @@ class AgenticMCPAgent:
         
         return "\n".join(formatted_parts)
         
-    async def _process_chat_message(self, message: str) -> str:
+    async def _process_chat_message(self, message: str, chat_history: Optional[List[Dict[str, str]]] = None) -> str:
         """
         Process a chat message using the agentic approach.
         
         Args:
             message: User message
+            chat_history: Optional chat history for context
             
         Returns:
             Agent response
         """
+        # Get server descriptions for context if available
+        detailed_server_info = {server_name: server.description for server_name, server in self.servers.items() 
+                               if hasattr(server, 'description') and server.description}
+        
         # First, get the agent's thinking about what tools might be needed
-        thinking, needed_tools = await self.llm.analyze_task(message, self.all_tools)
+        thinking, needed_tools = await self.llm.analyze_task(message, self.all_tools, chat_history, detailed_server_info)
         log.debug(f"Agent thinking: {thinking}")
         log.info(f"Agent selected {len(needed_tools)} tools to use: {[t.get('name') for t in needed_tools]}")
         
@@ -414,7 +421,7 @@ class AgenticMCPAgent:
             self._last_tool_results = f"EXECUTION SUMMARY:\n{execution_summary}\n\nRESULTS:\n{tool_results}"
             
             log.info("Synthesizing final response from tool results")
-            final_response = await self.llm.synthesize_results(message, thinking, tool_results)
+            final_response = await self.llm.synthesize_results(message, thinking, tool_results, chat_history)
             return final_response
         else:
             return thinking 
