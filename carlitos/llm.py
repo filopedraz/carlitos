@@ -12,7 +12,6 @@ from carlitos.config import LLMConfig
 from carlitos.prompt import (
     TASK_ANALYSIS_PROMPT, 
     SYNTHESIS_PROMPT, 
-    TOOL_SELECTION_PROMPT,
     CARLITOS_SYSTEM_PROMPT,
     TASK_ANALYSIS_SYSTEM_PROMPT
 )
@@ -69,57 +68,6 @@ class LLMCoreAgent:
         
         # If no code blocks, just return the original (it might be clean already)
         return response.strip()
-    
-    async def select_tool(self, query: str, available_tools: List[Tool]) -> Tuple[Optional[str], Dict[str, Any], str]:
-        """
-        Prompt LLM to select appropriate tool and parameters.
-        
-        Args:
-            query: User query
-            available_tools: List of available tools
-            
-        Returns:
-            Tuple of (tool_name, parameters, reasoning)
-            If tool_name is None, LLM decided no tool is needed
-        """
-        # Do not filter tools, use all available tools
-        log.debug(f"Using all {len(available_tools)} tools without filtering")
-        
-        # Create prompt for tool selection
-        prompt = self._get_tool_selection_prompt(query, available_tools)
-        
-        log.debug(f"Sending prompt to PydanticAI")
-        
-        try:
-            # Get response from PydanticAI
-            # Only pass the query part as the message, as we've set the system prompt during initialization
-            result = await self.client.run(prompt, temperature=self.temperature)
-            response = result.output
-            
-            # Clean response from code blocks  
-            cleaned_response = self._clean_json_response(response)
-            
-            # Parse JSON response
-            response_data = json.loads(cleaned_response)
-            
-            tool_name = response_data.get("tool")
-            parameters = response_data.get("parameters", {})
-            reasoning = response_data.get("reasoning", "No reasoning provided")
-            
-            # If tool is NONE, return None for tool name
-            if tool_name == "NONE":
-                tool_name = None
-                
-            log.debug(f"Selected tool: {tool_name}, Parameters: {parameters}")
-            return tool_name, parameters, reasoning
-            
-        except json.JSONDecodeError as e:
-            log.error(f"Failed to parse JSON from LLM response: {e}")
-            log.error(f"Raw response: {response}")
-            raise ValueError("LLM returned invalid JSON response")
-        except Exception as e:
-            log.error(f"Error getting tool selection from LLM: {e}")
-            raise
     
     async def analyze_task(self, query: str, available_tools: List[Tool], chat_history: List[Dict[str, str]] = None, detailed_server_info: Dict[str, str] = None) -> Tuple[str, List[Dict[str, Any]]]:
         """
@@ -238,31 +186,6 @@ class LLMCoreAgent:
             log.error(f"Error in result synthesis: {e}")
             # Fallback response
             return f"I've processed your request, but encountered an error when formatting the results: {str(e)}. Here's the raw data: {tool_results}"
-    
-    def _get_tool_selection_prompt(self, query: str, available_tools: List[Tool]) -> str:
-        """
-        Create prompt for tool selection.
-        
-        Args:
-            query: User query
-            available_tools: List of available tools
-            
-        Returns:
-            Formatted prompt string
-        """
-        tools_description = "\n".join([
-            f"- Name: {tool.name}\n  Description: {tool.description}\n  Parameters: {json.dumps(tool.inputSchema)}"
-            for tool in available_tools
-        ])
-        
-        # Include current date and time
-        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        return TOOL_SELECTION_PROMPT.format(
-            tools_description=tools_description,
-            query=query,
-            current_datetime=current_datetime
-        )
     
     def _get_task_analysis_prompt(self, query: str, available_tools: List[Tool], detailed_server_info: Dict[str, str] = None, chat_history_formatted: str = "") -> str:
         """
