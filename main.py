@@ -11,13 +11,19 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from carlitos.mega_agent import MegaAgent
-from carlitos.config import DEBUG, VERBOSE, DEFAULT_CONFIG
+from carlitos.config import DEBUG, DEFAULT_CONFIG
 
 logger = logging.getLogger("carlitos")
 
 console = Console()
 
 app = typer.Typer(help="Carlitos - An agentic MCP client")
+
+
+# Create a null handler that discards all logs
+class NullHandler(logging.Handler):
+    def emit(self, record):
+        pass
 
 
 async def chat_loop(agent, debug=False):
@@ -132,25 +138,62 @@ async def discover_tools(agent):
             console.print(f"[bold red]Error initializing agent:[/bold red] {str(e)}")
 
 
-def run_chat(verbose=VERBOSE, debug=DEBUG):
+def configure_logging(debug=False):
+    """
+    Configure logging based on debug flag.
+    
+    Args:
+        debug: Whether to enable debug mode
+    """
+    root_logger = logging.getLogger()
+    
+    # Remove all handlers from root logger
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+        
+    if debug:
+        # Enable DEBUG logging with rich handler when in debug mode
+        handler = logging.getLogger().handlers[0] if logging.getLogger().handlers else None
+        if not handler or not isinstance(handler, logging.StreamHandler):
+            from rich.logging import RichHandler
+            handler = RichHandler(rich_tracebacks=True)
+            root_logger.addHandler(handler)
+        
+        root_logger.setLevel(logging.DEBUG)
+        handler.setLevel(logging.DEBUG)
+        
+        # Set carlitos.* loggers to DEBUG level
+        for logger_name in logging.root.manager.loggerDict:
+            logging.getLogger(logger_name).setLevel(logging.DEBUG)
+    else:
+        # Add null handler to discard all logs
+        null_handler = NullHandler()
+        root_logger.addHandler(null_handler)
+        
+        # Set root logger to CRITICAL to minimize any logs
+        root_logger.setLevel(logging.CRITICAL)
+        
+        # Silence all loggers
+        for logger_name in logging.root.manager.loggerDict:
+            current_logger = logging.getLogger(logger_name)
+            # Remove all handlers
+            for handler in current_logger.handlers[:]:
+                current_logger.removeHandler(handler)
+            current_logger.addHandler(null_handler)
+            current_logger.setLevel(logging.CRITICAL)
+
+
+def run_chat(debug=DEBUG):
     """
     Implementation of the chat functionality.
     
     Args:
-        config_path: Path to the config file
-        verbose: Whether to enable verbose output
         debug: Whether to enable debug mode
     """
-    # Set logging level
-    if verbose or debug:
-        logger.setLevel(logging.DEBUG)
-        # Set all carlitos.* loggers to DEBUG level
-        for logger_name in logging.root.manager.loggerDict:
-            if logger_name.startswith("carlitos."):
-                logging.getLogger(logger_name).setLevel(logging.DEBUG)
+    # Configure logging
+    configure_logging(debug)
     
     try:
-        
         # Create and initialize MegaAgent
         agent = MegaAgent(DEFAULT_CONFIG)
         
@@ -174,30 +217,33 @@ def run_chat(verbose=VERBOSE, debug=DEBUG):
         sys.exit(0)
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {str(e)}")
-        if verbose or debug:
+        if debug:
             console.print_exception()
         sys.exit(1)
 
 
 @app.command()
 def chat(
-    verbose: bool = False,
     debug: bool = False
 ):
     """
     Start an interactive chat session with Carlitos.
     Exit with CTRL+C.
     """
-    run_chat(verbose, debug)
+    run_chat(debug)
 
 
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context):
+def main(
+    ctx: typer.Context,
+    debug: bool = typer.Option(False, "--debug", help="Enable debug mode with verbose logging")
+):
     """
     Start chat mode when no command is provided.
     """
     if ctx.invoked_subcommand is None:
-        chat()
+        # Pass the debug flag to chat
+        chat(debug=debug)
 
 
 if __name__ == "__main__":

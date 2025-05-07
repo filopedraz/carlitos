@@ -12,7 +12,7 @@ load_dotenv()
 # Configure logging
 # ------------------------------------------------------------------------------
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,  # Default to ERROR level, will be overridden by DEBUG flag if set
     format="%(message)s",
     datefmt="[%X]",
     handlers=[RichHandler(rich_tracebacks=True)]
@@ -22,7 +22,6 @@ logger = logging.getLogger("carlitos.config")
 # Basic configuration
 # ------------------------------------------------------------------------------
 DEBUG = os.environ.get("DEBUG", "False").lower() in ("true", "1", "t")
-VERBOSE = os.environ.get("VERBOSE", "False").lower() in ("true", "1", "t")
 
 # Default paths
 # ------------------------------------------------------------------------------
