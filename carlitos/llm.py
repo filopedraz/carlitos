@@ -111,8 +111,7 @@ class AgenticLLMToolSelector:
     
     async def analyze_task(self, query: str, available_tools: List[Tool], chat_history: List[Dict[str, str]] = None, detailed_server_info: Dict[str, str] = None) -> Tuple[str, List[Dict[str, Any]]]:
         """
-        Analyze the task to determine what tools might be needed.
-        This is the "thinking" phase of the agentic process.
+        Analyze a user query and decide what tools to use.
         
         Args:
             query: User query
@@ -121,29 +120,26 @@ class AgenticLLMToolSelector:
             detailed_server_info: Optional dictionary of server names to descriptions
             
         Returns:
-            Tuple of (thinking, needed_tools)
-            Where thinking is the agent's thought process
-            And needed_tools is a list of tool specifications
+            Tuple of (thinking result, list of needed tools)
         """
-        # Use all available tools without filtering
-        log.debug(f"Using all {len(available_tools)} tools without filtering")
+        # Format tools for the prompt
+        tools_formatted = self._format_tools(available_tools)
         
-        # Format chat history if available
+        # Format chat history if provided
         chat_history_formatted = ""
         if chat_history:
-            try:
-                # Format chat history as a string
-                history_items = []
-                for msg in chat_history[-5:]:  # Last 5 messages to save tokens
-                    prefix = "User: " if msg.role == "user" else "Carlitos: "
-                    history_items.append(f"{prefix}{msg.content}")
-                chat_history_formatted = "\n\n".join(history_items)
-            except Exception as e:
-                log.warning(f"Error formatting chat history: {e}")
-                chat_history_formatted = ""
+            chat_history_formatted = "\n".join([
+                f"{msg['role'].capitalize()}: {msg['content']}"
+                for msg in chat_history[-5:]  # Last 5 messages
+            ])
         
-        # Create prompt for task analysis
-        prompt = self._get_task_analysis_prompt(query, available_tools, detailed_server_info, chat_history_formatted)
+        # Get the prompt
+        prompt = self._get_task_analysis_prompt(
+            query, 
+            available_tools, 
+            detailed_server_info, 
+            chat_history_formatted
+        )
         
         log.debug(f"Sending task analysis prompt to OpenAI")
         
@@ -175,46 +171,72 @@ class AgenticLLMToolSelector:
             log.error(f"Error in task analysis: {e}")
             return f"I encountered an error while analyzing your request: {str(e)}", []
     
-    async def synthesize_results(self, query: str, thinking: str, tool_results: str, chat_history: List = None) -> str:
+    async def synthesize_results(self, query: str, thinking: str, tool_results: str, chat_history: List[Dict[str, str]] = None) -> str:
         """
-        Synthesize the results of tool executions into a coherent response.
+        Synthesize tool results to provide an answer to the user.
         
         Args:
-            query: Original user query
-            thinking: Initial agent thinking
-            tool_results: Results from tool executions
+            query: User query
+            thinking: The thinking process that led to tool selection
+            tool_results: Results from executing the tools
             chat_history: Optional chat history
             
         Returns:
             Synthesized response
         """
-        # Format chat history if available
+        # Format chat history if provided
         chat_history_formatted = ""
         if chat_history:
-            try:
-                # Format chat history as a string
-                history_items = []
-                for msg in chat_history[-5:]:  # Last 5 messages to save tokens
-                    prefix = "User: " if msg.role == "user" else "Carlitos: "
-                    history_items.append(f"{prefix}{msg.content}")
-                chat_history_formatted = "\n\n".join(history_items)
-            except Exception as e:
-                log.warning(f"Error formatting chat history: {e}")
-                chat_history_formatted = ""
-                
-        # Create prompt for synthesis
-        prompt = self._get_synthesis_prompt(query, thinking, tool_results, chat_history_formatted)
+            chat_history_formatted = "\n".join([
+                f"{msg['role'].capitalize()}: {msg['content']}"
+                for msg in chat_history[-5:]  # Last 5 messages
+            ])
+            
+        # Get current date and time for context
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        log.debug(f"Sending synthesis prompt to OpenAI")
+        # Get the synthesis prompt
+        prompt = SYNTHESIS_PROMPT.format(
+            query=query,
+            thinking=thinking,
+            tool_results=tool_results,
+            chat_history_formatted=chat_history_formatted,
+            current_datetime=current_datetime
+        )
+        
+        log.debug(f"Sending synthesis prompt to OpenAI with {len(tool_results)} chars of tool results")
         
         try:
             # Get response from OpenAI
             response = self._get_openai_synthesis_response(prompt)
+            
             return response
             
         except Exception as e:
-            log.error(f"Error in synthesis: {e}")
-            return f"I encountered an error while synthesizing the results: {str(e)}\n\nRaw tool results: {tool_results}"
+            log.error(f"Error in result synthesis: {e}")
+            # Fallback response
+            return f"I've processed your request, but encountered an error when formatting the results: {str(e)}. Here's the raw data: {tool_results}"
+    
+    def _get_openai_response(self, prompt: str) -> str:
+        """
+        Get response from OpenAI.
+        
+        Args:
+            prompt: The prompt to send
+            
+        Returns:
+            Response text
+        """
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": "You are a helpful AI assistant that analyzes tasks and selects appropriate tools to execute them."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=self.temperature,
+        )
+        
+        return response.choices[0].message.content
     
     def _get_tool_selection_prompt(self, query: str, available_tools: List[Tool]) -> str:
         """
@@ -252,76 +274,27 @@ class AgenticLLMToolSelector:
             chat_history_formatted: Formatted chat history string
             
         Returns:
-            Formatted prompt string
+            Prompt string
         """
-        tools_description = "\n".join([
-            f"- Name: {tool.name}\n  Description: {tool.description}\n  Parameters: {json.dumps(tool.inputSchema)}"
-            for tool in available_tools
-        ])
+        # Format available tools
+        tools_description = self._format_tools(available_tools)
         
-        # Include server descriptions if available
-        server_info = ""
+        # Add detailed server info if available
         if detailed_server_info:
-            server_info = "\n\n## INTEGRATION DESCRIPTIONS:\n"
-            server_info += "\n".join([
-                f"- {server_name}: {description}"
-                for server_name, description in detailed_server_info.items()
-            ])
-        
-        # Include current date and time
+            tools_description += "\n\nAdditional Server Information:\n"
+            for server_name, description in detailed_server_info.items():
+                tools_description += f"- {server_name}: {description}\n"
+                
+        # Get current date and time for context
         current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
+        # Return the prompt using the template from prompt.py
         return TASK_ANALYSIS_PROMPT.format(
-            chat_history_formatted=chat_history_formatted,
             query=query,
-            tools_description=tools_description + server_info,
+            tools_description=tools_description,
+            chat_history_formatted=chat_history_formatted,
             current_datetime=current_datetime
         )
-    
-    def _get_synthesis_prompt(self, query: str, thinking: str, tool_results: str, chat_history_formatted: str = "") -> str:
-        """
-        Create prompt for synthesizing results.
-        
-        Args:
-            query: Original user query
-            thinking: Initial agent thinking
-            tool_results: Results from tool executions
-            chat_history_formatted: Formatted chat history string
-            
-        Returns:
-            Formatted prompt string
-        """
-        # Include current date and time
-        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        return SYNTHESIS_PROMPT.format(
-            chat_history_formatted=chat_history_formatted,
-            query=query,
-            thinking=thinking,
-            tool_results=tool_results,
-            current_datetime=current_datetime
-        )
-    
-    def _get_openai_response(self, prompt: str) -> str:
-        """
-        Get response from OpenAI.
-        
-        Args:
-            prompt: The prompt to send
-            
-        Returns:
-            Response text
-        """
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant that selects the appropriate tool based on user queries."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=self.temperature,
-        )
-        
-        return response.choices[0].message.content
     
     def _get_openai_synthesis_response(self, prompt: str) -> str:
         """
@@ -342,4 +315,77 @@ class AgenticLLMToolSelector:
             temperature=self.temperature,
         )
         
-        return response.choices[0].message.content 
+        return response.choices[0].message.content
+    
+    def _format_tools(self, available_tools: List[Tool]) -> str:
+        """
+        Format available tools for inclusion in prompts.
+        
+        Args:
+            available_tools: List of available tools
+            
+        Returns:
+            Formatted tools string
+        """
+        formatted_tools = []
+        
+        for tool in available_tools:
+            tool_info = f"Tool: {tool.name}\n"
+            tool_info += f"  Description: {tool.description}\n"
+            
+            # Format parameters
+            if hasattr(tool, 'inputSchema') and tool.inputSchema:
+                params = []
+                try:
+                    if isinstance(tool.inputSchema, dict) and "properties" in tool.inputSchema:
+                        properties = tool.inputSchema.get("properties", {})
+                        required = tool.inputSchema.get("required", [])
+                        
+                        for param_name, param_info in properties.items():
+                            param_type = param_info.get("type", "unknown")
+                            description = param_info.get("description", "")
+                            is_required = param_name in required
+                            
+                            # For objects like 'params', include their nested properties if available
+                            if param_type == "object" and "properties" in param_info:
+                                param_str = f"    - {param_name} (Type: {param_type}"
+                                if is_required:
+                                    param_str += ", Required"
+                                param_str += f"): {description}"
+                                params.append(param_str)
+                                
+                                # Add nested properties
+                                nested_properties = param_info.get("properties", {})
+                                nested_required = param_info.get("required", [])
+                                for nested_name, nested_info in nested_properties.items():
+                                    nested_type = nested_info.get("type", "unknown")
+                                    nested_desc = nested_info.get("description", "")
+                                    nested_required_str = ", Required" if nested_name in nested_required else ""
+                                    params.append(f"      • {nested_name} (Type: {nested_type}{nested_required_str}): {nested_desc}")
+                            else:
+                                param_str = f"    - {param_name} (Type: {param_type}"
+                                if is_required:
+                                    param_str += ", Required"
+                                param_str += f"): {description}"
+                                params.append(param_str)
+                    else:
+                        # Simpler format if schema doesn't match expected structure
+                        # For GoogleCalendar and similar APIs that use a generic 'params' object
+                        if hasattr(tool, 'parameterHints') and tool.parameterHints:
+                            # If there are parameter hints available, use them
+                            for param_name, param_hint in tool.parameterHints.items():
+                                params.append(f"    - {param_name}: {param_hint}")
+                        else:
+                            # Fallback to the raw inputSchema
+                            params.append(f"    Parameters: {json.dumps(tool.inputSchema)}")
+                except Exception as e:
+                    # Fallback if parsing fails
+                    log.error(f"Error formatting tool parameters for {tool.name}: {e}")
+                    params.append(f"    Parameters: {str(tool.inputSchema)}")
+                
+                if params:
+                    tool_info += "  Parameters:\n" + "\n".join(params)
+            
+            formatted_tools.append(tool_info)
+        
+        return "\n".join(formatted_tools)

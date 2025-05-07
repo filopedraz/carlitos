@@ -1,11 +1,11 @@
 import logging
 import json
-from typing import Dict, List, Any, Optional, Tuple, NamedTuple
-
-from mcp import Tool
+from typing import Dict, NamedTuple
+import re
 
 from carlitos.agent import AgenticMCPAgent
 from carlitos.config import CarlitosConfig, ServerConfig
+from carlitos.prompt import CLARIFICATION_QUESTION_PROMPT, ROUTING_PROMPT
 
 log = logging.getLogger("carlitos.mega_agent")
 
@@ -36,7 +36,7 @@ class MegaAgent:
         self._last_tool_results = None
         self.integration_types = set()
         self._current_agent_type = None  # Track the current agent being used
-        self.chat_history = []  # Store chat history
+        self.chat_history = []  # Store chat history temporarily
         
         # Extract server descriptions from config
         for server in config.servers:
@@ -110,7 +110,7 @@ class MegaAgent:
         # Initialize sub-agents if not done yet
         if not self.sub_agents:
             await self.initialize_sub_agents()
-            
+        
         # Use lightweight routing based on integration descriptions
         relevant_agents = await self._lightweight_route_request(message)
         
@@ -129,6 +129,7 @@ class MegaAgent:
                 
                 # Add response to chat history
                 self.chat_history.append(ChatMessage(role="assistant", content=response))
+                
                 return response
             
             # If we have multiple relevant agents, coordinate between them
@@ -138,6 +139,7 @@ class MegaAgent:
             
             # Add response to chat history
             self.chat_history.append(ChatMessage(role="assistant", content=response))
+            
             return response
         
         # If we couldn't determine relevant agents, ask a clarifying question
@@ -150,6 +152,7 @@ class MegaAgent:
         
         # Add clarification to chat history
         self.chat_history.append(ChatMessage(role="assistant", content=clarification))
+        
         return clarification
     
     async def _ask_clarification_question(self, message: str, available_integrations: str) -> str:
@@ -171,27 +174,12 @@ class MegaAgent:
         # Format chat history for context
         formatted_history = self._format_chat_history()
         
-        prompt = f"""
-You are Carlitos, a personal assistant that routes requests to specialized tools based on the user's needs.
-You need to ask a clarifying question because you can't determine which specialized system to use.
-
-Current chat history:
-{formatted_history}
-
-Most recent user message: {message}
-
-Available specialized systems:
-{available_integrations}
-
-Please ask a clarifying question to help determine which specialized system the user needs.
-Your question should:
-1. Be conversational and friendly
-2. Politely explain that you need more context
-3. Offer 2-3 specific options related to the available systems that might match what they're asking for
-4. Be concise (1-3 sentences maximum)
-
-Do not apologize profusely or be overly formal. Be helpful and direct.
-"""
+        # Create the prompt using the constant from prompt.py
+        prompt = CLARIFICATION_QUESTION_PROMPT.format(
+            formatted_history=formatted_history,
+            message=message,
+            available_integrations=available_integrations
+        )
         
         try:
             response = client.chat.completions.create(
@@ -219,7 +207,7 @@ Do not apologize profusely or be overly formal. Be helpful and direct.
         if not self.chat_history:
             return "No previous conversation."
             
-        # Format the history (limit to last 5 exchanges to save tokens)
+        # Format the history (limit to last 10 exchanges to save tokens)
         formatted = []
         for msg in self.chat_history[-10:]:  # Last 10 messages
             prefix = "User: " if msg.role == "user" else "Carlitos: "
@@ -266,29 +254,12 @@ Do not apologize profusely or be overly formal. Be helpful and direct.
         # Get chat history for context
         formatted_history = self._format_chat_history()
             
-        # Prepare a prompt that only includes integration descriptions
-        prompt = f"""
-You are Carlitos, a routing assistant. Your task is to determine which integration(s) should handle this request.
-
-### Chat History:
-{formatted_history}
-
-### Current User Query:
-{message}
-
-### Available Integrations:
-{self._format_integration_descriptions()}
-
-Based on the user's query AND previous context, determine which integration(s) would be most appropriate to handle this request.
-Only select integrations that are directly relevant to the request.
-If none of the integrations are relevant, return an empty list.
-
-Respond in the following JSON format:
-{{
-    "reasoning": "Your analysis of why certain integrations are needed",
-    "integrations": ["integration1", "integration2"]
-}}
-"""
+        # Create the prompt using the constant from prompt.py with matching parameter names
+        prompt = ROUTING_PROMPT.format(
+            formatted_history=formatted_history,
+            message=message,
+            integrations_descriptions=self._format_integration_descriptions()
+        )
         
         # Use the LLM from the main config
         client = self.sub_agents[next(iter(self.sub_agents))].llm.client
@@ -369,83 +340,12 @@ Respond in the following JSON format:
         """
         # Remove markdown code blocks (```json ... ```)
         pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
-        import re
         match = re.search(pattern, response)
         if match:
             return match.group(1).strip()
         
         # If no code blocks, just return the original (it might be clean already)
         return response.strip()
-    
-    async def _discover_all_tools(self):
-        """
-        Discover all tools from all servers.
-        """
-        all_tools = []
-        
-        # Create a temporary agent to discover tools
-        temp_agent = AgenticMCPAgent(self.config)
-        self.all_tools = await temp_agent._discover_tools()
-        
-        log.info(f"Discovered {len(self.all_tools)} tools across all servers")
-    
-    async def _route_request_by_tools(self, message: str) -> Dict[str, AgenticMCPAgent]:
-        """
-        Determine which sub-agent(s) should handle a request based on tool selection.
-        This is a fallback for when lightweight routing doesn't work.
-        
-        Args:
-            message: User message
-            
-        Returns:
-            Dictionary of integration types to sub-agents
-        """
-        relevant_agents = {}
-        
-        # If we don't have tools or subagents, we can't route
-        if not self.all_tools or not self.sub_agents:
-            log.info("Cannot perform tool-based routing: missing tools or sub-agents")
-            return {}
-        
-        try:
-            log.info("Performing tool-based routing analysis")
-            # Use the LLM from any sub-agent (they all share the same LLM config)
-            first_agent = next(iter(self.sub_agents.values()))
-            thinking, needed_tools = await first_agent.llm.analyze_task(
-                message, self.all_tools, chat_history=self.chat_history, detailed_server_info=self.server_descriptions
-            )
-            
-            log.debug(f"Tool-based routing thinking: {thinking}")
-            
-            if not needed_tools:
-                log.info("Tool-based routing: No tools needed for this request")
-                return {}
-                
-            # Map tools to their integration types
-            integration_tools = {}
-            for tool_info in needed_tools:
-                tool_name = tool_info.get("name")
-                # Find which server/integration this tool belongs to
-                for server_name, tools in first_agent._server_tools_map.items():
-                    if tool_name in tools:
-                        integration_type = self._get_integration_type(server_name)
-                        if integration_type not in integration_tools:
-                            integration_tools[integration_type] = []
-                        integration_tools[integration_type].append(tool_info)
-            
-            # Add relevant agents based on tools needed
-            for integration_type, tools in integration_tools.items():
-                if integration_type in self.sub_agents:
-                    relevant_agents[integration_type] = self.sub_agents[integration_type]
-                    tool_names = [t.get('name') for t in tools]
-                    log.info(f"✅ Selected integration '{integration_type}' based on needed tools: {tool_names}")
-                else:
-                    log.warning(f"⚠️ Integration '{integration_type}' needed but no matching sub-agent found")
-            
-        except Exception as e:
-            log.error(f"Error in tool-based routing: {e}")
-            
-        return relevant_agents
     
     async def _coordinate_multi_agent_response(self, message: str, relevant_agents: Dict[str, AgenticMCPAgent]) -> str:
         """
