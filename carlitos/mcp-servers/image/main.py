@@ -6,12 +6,60 @@ import sys
 import json
 from fastmcp import FastMCP
 from openai import OpenAI
+import time
+import base64
+import uuid
+from pathlib import Path
+from flask import Flask, send_from_directory
+from threading import Thread
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG, 
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                    handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger("image_server")
+
+# Global variables for reload functionality
+should_exit = False
+observer = None
+
+# Create directory for images if it doesn't exist
+IMAGE_DIR = Path(__file__).parent / "images"
+IMAGE_DIR.mkdir(exist_ok=True)
+
+# Configure a simple Flask server to serve images
+flask_app = Flask(__name__)
+IMAGE_SERVER_PORT = 8080  # Choose an available port
+IMAGE_SERVER_URL = f"http://localhost:{IMAGE_SERVER_PORT}/images/"
+
+@flask_app.route('/images/<path:filename>')
+def serve_image(filename):
+    return send_from_directory(str(IMAGE_DIR), filename)
+
+# Start Flask server in a separate thread
+def start_image_server():
+    flask_app.run(host='0.0.0.0', port=IMAGE_SERVER_PORT, debug=False, threaded=True)
+
+image_server_thread = Thread(target=start_image_server, daemon=True)
+image_server_thread.start()
+logger.info(f"Started image server at {IMAGE_SERVER_URL}")
+
+class FileChangeHandler(FileSystemEventHandler):
+    def on_modified(self, event):
+        global should_exit
+        if event.src_path.endswith('.py'):
+            logger.info(f"Python file changed: {event.src_path}. Reloading server...")
+            should_exit = True
+
+def start_file_watcher(path="."):
+    global observer
+    event_handler = FileChangeHandler()
+    observer = Observer()
+    observer.schedule(event_handler, path, recursive=True)
+    observer.start()
+    logger.info(f"File watcher started for directory: {path}")
 
 class OpenAIImageGenServer:
     def __init__(self):
@@ -35,7 +83,7 @@ class OpenAIImageGenServer:
                 "prompt": prompt,
                 "size": size,
                 "n": n,
-                "quality": "medium"  # Options: low, medium, high, auto
+                "quality": "medium",  # Options: low, medium, high, auto
             }
             
             # Add transparent background if requested
@@ -43,12 +91,32 @@ class OpenAIImageGenServer:
                 params["background"] = "transparent"
                 params["output_format"] = "png"  # Transparency requires PNG or WebP
             
+            logger.info(f"Sending request with params: {params}")
+            
             # Make the API call using the new client.images.generate method
             response = self.client.images.generate(**params)
             
+            # gpt-image-1 returns base64 data, save to file and return local URL
+            image_url = None
+            if response.data and len(response.data) > 0:
+                # Get the base64 data
+                b64_data = response.data[0].b64_json
+                if b64_data:
+                    # Save image to file with unique filename
+                    image_format = "png" if transparent_background else "jpg"
+                    filename = f"{uuid.uuid4()}.{image_format}"
+                    file_path = IMAGE_DIR / filename
+                    
+                    with open(file_path, "wb") as f:
+                        f.write(base64.b64decode(b64_data))
+                    
+                    # Create local URL for the saved image
+                    image_url = f"{IMAGE_SERVER_URL}{filename}"
+                    logger.info(f"Saved image to {file_path}, local URL: {image_url}")
+            
             result_data = {
                 "success": True,
-                "data": response.data[0].url,
+                "data": image_url,
                 "model": "gpt-image-1"
             }
             logger.info(f"generate_image_4o successful, returning: {result_data}")
@@ -91,6 +159,13 @@ async def generate_image(prompt: str, size: str = "1024x1024", n: int = 1,
             referenced_image_ids=referenced_image_ids # This param is for other models/contexts
         )
         logger.info(f"Tool 'generate_image' received from server: {json.dumps(result)}")
+        
+        # Check if we actually have data
+        if not result.get("data"):
+            logger.warning("No image URL was returned")
+            result["success"] = False
+            result["error"] = "No image URL was returned from the API"
+            
         return result
     except Exception as e:
         error_traceback = traceback.format_exc()
@@ -101,5 +176,34 @@ async def generate_image(prompt: str, size: str = "1024x1024", n: int = 1,
             "error": f"Tool error: {str(e)}"
         }
 
+def run_server_with_reload():
+    global should_exit
+    
+    # Start the file watcher
+    start_file_watcher()
+    
+    try:
+        # Run the server
+        mcp.run(transport="sse", host="0.0.0.0", port=8000)
+        
+        # Check for reload signal
+        while not should_exit:
+            time.sleep(1)
+            
+        # If we get here, we need to restart
+        logger.info("Stopping server for reload...")
+        if observer:
+            observer.stop()
+            observer.join()
+        
+        logger.info("Restarting process...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except KeyboardInterrupt:
+        logger.info("Server stopped by keyboard interrupt")
+    finally:
+        if observer:
+            observer.stop()
+            observer.join()
+
 if __name__ == "__main__":
-    mcp.run(transport="sse", host="0.0.0.0", port=8000)
+    run_server_with_reload()

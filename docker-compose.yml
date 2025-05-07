@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8001:8000"
+      - "8080:8080"
     env_file:
       - .env
     volumes:
