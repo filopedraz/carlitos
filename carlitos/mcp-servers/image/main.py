@@ -11,7 +11,8 @@ import base64
 import uuid
 from pathlib import Path
 from flask import Flask, send_from_directory
-from threading import Thread
+from threading import Thread, Event
+import signal
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -22,8 +23,9 @@ logging.basicConfig(level=logging.DEBUG,
 logger = logging.getLogger("image_server")
 
 # Global variables for reload functionality
-should_exit = False
+shutdown_event = Event()
 observer = None
+flask_server = None
 
 # Create directory for images if it doesn't exist
 IMAGE_DIR = Path(__file__).parent / "images"
@@ -48,10 +50,12 @@ logger.info(f"Started image server at {IMAGE_SERVER_URL}")
 
 class FileChangeHandler(FileSystemEventHandler):
     def on_modified(self, event):
-        global should_exit
         if event.src_path.endswith('.py'):
-            logger.info(f"Python file changed: {event.src_path}. Reloading server...")
-            should_exit = True
+            logger.info(f"Python file changed: {event.src_path}. Triggering reload...")
+            # Set shutdown event to trigger restart
+            shutdown_event.set()
+            # Signal the main process
+            os.kill(os.getpid(), signal.SIGTERM)
 
 def start_file_watcher(path="."):
     global observer
@@ -177,33 +181,57 @@ async def generate_image(prompt: str, size: str = "1024x1024", n: int = 1,
         }
 
 def run_server_with_reload():
-    global should_exit
+    global observer
     
-    # Start the file watcher
-    start_file_watcher()
+    # Set up signal handling for graceful shutdown
+    def signal_handler(sig, frame):
+        logger.info(f"Received signal {sig}")
+        shutdown_event.set()
     
-    try:
-        # Run the server
-        mcp.run(transport="sse", host="0.0.0.0", port=8000)
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    while True:
+        # Reset shutdown event for new server instance
+        shutdown_event.clear()
         
-        # Check for reload signal
-        while not should_exit:
-            time.sleep(1)
+        # Start the file watcher
+        start_file_watcher(Path(__file__).parent)
+        
+        try:
+            logger.info("Starting MCP server...")
+            # Run in a separate thread so we can check for shutdown events
+            server_thread = Thread(target=lambda: mcp.run(transport="sse", host="0.0.0.0", port=8000))
+            server_thread.daemon = True
+            server_thread.start()
             
-        # If we get here, we need to restart
-        logger.info("Stopping server for reload...")
-        if observer:
-            observer.stop()
-            observer.join()
-        
-        logger.info("Restarting process...")
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-    except KeyboardInterrupt:
-        logger.info("Server stopped by keyboard interrupt")
-    finally:
-        if observer:
-            observer.stop()
-            observer.join()
+            # Wait for shutdown event
+            while not shutdown_event.is_set():
+                time.sleep(0.5)
+                
+            # If we get here, we need to restart
+            if observer:
+                logger.info("Stopping file watcher...")
+                observer.stop()
+                observer.join()
+            
+            # If shutdown was triggered by file change, restart
+            if shutdown_event.is_set():
+                logger.info("Restarting process...")
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+                break
+                
+        except KeyboardInterrupt:
+            logger.info("Server stopped by keyboard interrupt")
+            break
+        except Exception as e:
+            logger.error(f"Error running server: {str(e)}", exc_info=True)
+            break
+        finally:
+            if observer:
+                observer.stop()
+                observer.join()
 
 if __name__ == "__main__":
     run_server_with_reload()
