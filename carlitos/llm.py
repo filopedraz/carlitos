@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import re
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Tuple
 from datetime import datetime
 import base64
 import logfire
