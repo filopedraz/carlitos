@@ -35,6 +35,13 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-2.5-flash-preview-04-17")
 LLM_API_KEY_ENV = os.environ.get("LLM_API_KEY_ENV", "GEMINI_API_KEY")
 LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
 
+# Langfuse configuration (for Pydantic AI integration)
+# ------------------------------------------------------------------------------
+LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY")
+LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY")
+LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST")
+LANGFUSE_SERVICE_NAME = os.environ.get("LANGFUSE_SERVICE_NAME", "Carlitos")
+
 # Load and standardize server configurations
 # ------------------------------------------------------------------------------
 SERVERS = standardize_server_configs(load_server_configs(DEFAULT_CONFIG_PATH))
@@ -45,7 +52,11 @@ DEFAULT_LLM_CONFIG = {
     "provider": LLM_PROVIDER,
     "model": LLM_MODEL,
     "api_key_env": LLM_API_KEY_ENV,
-    "temperature": LLM_TEMPERATURE
+    "temperature": LLM_TEMPERATURE,
+    "langfuse_public_key": LANGFUSE_PUBLIC_KEY,
+    "langfuse_secret_key": LANGFUSE_SECRET_KEY,
+    "langfuse_host": LANGFUSE_HOST,
+    "langfuse_service_name": LANGFUSE_SERVICE_NAME
 }
 
 # Create default Carlitos config

@@ -4,6 +4,8 @@ import os
 import re
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
+import base64
+import logfire
 
 from pydantic_ai import Agent
 from mcp import Tool
@@ -15,7 +17,7 @@ from carlitos.prompt import (
     TASK_ANALYSIS_SYSTEM_PROMPT
 )
 
-log = logging.getLogger("carlitos.llm")
+logger = logging.getLogger("carlitos.llm")
 
 
 class LLMCoreAgent:
@@ -41,13 +43,35 @@ class LLMCoreAgent:
         if not os.environ["GEMINI_API_KEY"]:
             raise ValueError(f"API key not found in environment variable {llm_config['api_key_env']}")
         
+        # Configure Langfuse and Logfire if keys are provided
+        langfuse_public_key = llm_config.get("langfuse_public_key")
+        langfuse_secret_key = llm_config.get("langfuse_secret_key")
+        langfuse_host = llm_config.get("langfuse_host") # e.g., "https://cloud.langfuse.com" or "https://us.cloud.langfuse.com"
+
+        if langfuse_public_key and langfuse_secret_key and langfuse_host:
+            logger.info("Configuring Langfuse integration via Logfire and OpenTelemetry.")
+            langfuse_auth = base64.b64encode(f"{langfuse_public_key}:{langfuse_secret_key}".encode()).decode()
+            os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"{langfuse_host.rstrip('/')}/api/public/otel"
+            os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = f"Authorization=Basic {langfuse_auth}"
+            
+            logfire.configure(
+                service_name=llm_config.get("langfuse_service_name", "carlitos"),
+                send_to_logfire=False, # Send only to OTEL endpoint (Langfuse)
+            )
+            self.langfuse_enabled = True
+            logger.debug(f"Langfuse configured with service name: {llm_config.get('langfuse_service_name', 'carlitos')} and host: {langfuse_host}")
+        else:
+            self.langfuse_enabled = False
+            logger.info("Langfuse environment variables not fully set. Langfuse integration will be disabled.")
+
         # Initialize PydanticAI Agent
         model_name = f"google-gla:{self.model}"
         self.client = Agent(
             model_name,
-            system_prompt=CARLITOS_SYSTEM_PROMPT
+            system_prompt=CARLITOS_SYSTEM_PROMPT,
+            instrument=self.langfuse_enabled # Instrument if Langfuse is enabled
         )
-        log.debug(f"Initialized PydanticAI Agent with model {model_name}")
+        logger.debug(f"Initialized PydanticAI Agent with model {model_name}")
     
     def _clean_json_response(self, response: str) -> str:
         """
@@ -100,20 +124,21 @@ class LLMCoreAgent:
             chat_history_formatted
         )
         
-        log.debug(f"Sending task analysis prompt to PydanticAI")
+        logger.debug(f"Sending task analysis prompt to PydanticAI")
         
         try:
             # Get response from PydanticAI
             agent_for_task = Agent(
                 f"google-gla:{self.model}",
-                system_prompt=TASK_ANALYSIS_SYSTEM_PROMPT
+                system_prompt=TASK_ANALYSIS_SYSTEM_PROMPT,
+                instrument=self.langfuse_enabled # Instrument if Langfuse is enabled
             )
             result = await agent_for_task.run(prompt, temperature=self.temperature)
             response = result.output
             
             # Clean response from code blocks
             cleaned_response = self._clean_json_response(response)
-            log.debug(f"Cleaned response: {cleaned_response[:100]}...")
+            logger.debug(f"Cleaned response: {cleaned_response[:100]}...")
             
             # Parse JSON response
             response_data = json.loads(cleaned_response)
@@ -121,18 +146,18 @@ class LLMCoreAgent:
             thinking = response_data.get("thinking", "No thinking provided")
             needed_tools = response_data.get("tools", [])
             
-            log.debug(f"Thinking: {thinking[:100]}...")
-            log.debug(f"Needed tools: {[t.get('name') for t in needed_tools]}")
+            logger.debug(f"Thinking: {thinking[:100]}...")
+            logger.debug(f"Needed tools: {[t.get('name') for t in needed_tools]}")
             
             return thinking, needed_tools
             
         except json.JSONDecodeError as e:
-            log.error(f"Failed to parse JSON from LLM response: {e}")
-            log.error(f"Raw response: {response}")
+            logger.error(f"Failed to parse JSON from LLM response: {e}")
+            logger.error(f"Raw response: {response}")
             # Fallback to simple mode
             return "I couldn't properly analyze the task. Let me try to help directly.", []
         except Exception as e:
-            log.error(f"Error in task analysis: {e}")
+            logger.error(f"Error in task analysis: {e}")
             return f"I encountered an error while analyzing your request: {str(e)}", []
     
     async def synthesize_results(self, query: str, thinking: str, tool_results: str, chat_history: List[Dict[str, str]] = None) -> str:
@@ -168,13 +193,14 @@ class LLMCoreAgent:
             current_datetime=current_datetime
         )
         
-        log.debug(f"Sending synthesis prompt to PydanticAI with {len(tool_results)} chars of tool results")
+        logger.debug(f"Sending synthesis prompt to PydanticAI with {len(tool_results)} chars of tool results")
         
         try:
             # Get response from PydanticAI
             agent_for_synthesis = Agent(
                 f"google-gla:{self.model}",
-                system_prompt=CARLITOS_SYSTEM_PROMPT
+                system_prompt=CARLITOS_SYSTEM_PROMPT,
+                instrument=self.langfuse_enabled # Instrument if Langfuse is enabled
             )
             result = await agent_for_synthesis.run(prompt, temperature=self.temperature)
             response = result.output
@@ -182,7 +208,7 @@ class LLMCoreAgent:
             return response
             
         except Exception as e:
-            log.error(f"Error in result synthesis: {e}")
+            logger.error(f"Error in result synthesis: {e}")
             # Fallback response
             return f"I've processed your request, but encountered an error when formatting the results: {str(e)}. Here's the raw data: {tool_results}"
     
@@ -282,7 +308,7 @@ class LLMCoreAgent:
                             params.append(f"    Parameters: {json.dumps(tool.inputSchema)}")
                 except Exception as e:
                     # Fallback if parsing fails
-                    log.error(f"Error formatting tool parameters for {tool.name}: {e}")
+                    logger.error(f"Error formatting tool parameters for {tool.name}: {e}")
                     params.append(f"    Parameters: {str(tool.inputSchema)}")
                 
                 if params:
