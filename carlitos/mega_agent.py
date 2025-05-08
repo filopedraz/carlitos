@@ -1,11 +1,18 @@
 import logging
 import json
-from typing import Dict, NamedTuple
+from typing import Dict, NamedTuple, Any, List
 import re
 
+from pydantic_ai import Agent
+
 from carlitos.agent import AgenticMCPAgent
-from carlitos.config import CarlitosConfig, ServerConfig
-from carlitos.prompt import CLARIFICATION_QUESTION_PROMPT, ROUTING_PROMPT
+from carlitos.config import DEFAULT_LLM_CONFIG
+from carlitos.prompt import (
+    CLARIFICATION_QUESTION_PROMPT, 
+    ROUTING_PROMPT, 
+    CLARIFICATION_SYSTEM_PROMPT, 
+    ROUTING_SYSTEM_PROMPT
+)
 
 log = logging.getLogger("carlitos.mega_agent")
 
@@ -22,12 +29,12 @@ class MegaAgent:
     Each sub-agent handles a specific integration (e.g., Gmail, Calendar, Slack).
     """
     
-    def __init__(self, config: CarlitosConfig):
+    def __init__(self, config: Dict[str, Any]):
         """
         Initialize the MegaAgent with configuration.
         
         Args:
-            config: Agent configuration
+            config: Agent configuration dictionary
         """
         self.config = config
         self.all_tools = None
@@ -39,15 +46,15 @@ class MegaAgent:
         self.chat_history = []  # Store chat history temporarily
         
         # Extract server descriptions from config
-        for server in config.servers:
-            if hasattr(server, 'description') and server.description:
-                self.server_descriptions[server.name] = server.description
+        for server in config["servers"]:
+            if "description" in server and server["description"]:
+                self.server_descriptions[server["name"]] = server["description"]
                 
                 # Also keep track of integration types
-                integration_type = self._get_integration_type(server.name)
+                integration_type = self._get_integration_type(server["name"])
                 self.integration_types.add(integration_type)
         
-        log.debug(f"Initialized MegaAgent with {len(config.servers)} potential servers")
+        log.debug(f"Initialized MegaAgent with {len(config['servers'])} potential servers")
     
     async def initialize_sub_agents(self):
         """
@@ -57,8 +64,8 @@ class MegaAgent:
         integration_servers = {}
         
         # Create filters for each integration type
-        for server in self.config.servers:
-            integration_type = self._get_integration_type(server.name)
+        for server in self.config["servers"]:
+            integration_type = self._get_integration_type(server["name"])
             if integration_type not in integration_servers:
                 integration_servers[integration_type] = []
             integration_servers[integration_type].append(server)
@@ -66,10 +73,10 @@ class MegaAgent:
         # Create a sub-agent for each integration type
         for integration_type, servers in integration_servers.items():
             # Create a filtered config for this integration
-            filtered_config = CarlitosConfig(
-                servers=servers,
-                llm=self.config.llm
-            )
+            filtered_config = {
+                "servers": servers,
+                "llm": DEFAULT_LLM_CONFIG  # Use the default LLM config from constants
+            }
             
             # Create the sub-agent
             self.sub_agents[integration_type] = AgenticMCPAgent(filtered_config)
@@ -112,7 +119,7 @@ class MegaAgent:
             await self.initialize_sub_agents()
         
         # Use lightweight routing based on integration descriptions
-        relevant_agents = await self._lightweight_route_request(message)
+        relevant_agents = await self._identify_relevant_agents(message)
         
         # If we have specific agents identified, use them
         if relevant_agents:
@@ -125,7 +132,12 @@ class MegaAgent:
                 agent = relevant_agents[agent_type]
                 self._current_agent_type = agent_type
                 log.info(f"🎯 Activated agent: {agent_type}")
-                response = await agent.chat(message)
+                
+                # Convert chat history to the format expected by AgenticMCPAgent
+                formatted_chat_history = self._format_chat_history_for_agent()
+                
+                # Pass the chat history to the sub-agent
+                response = await agent.chat(message, chat_history=formatted_chat_history)
                 
                 # Add response to chat history
                 self.chat_history.append(ChatMessage(role="assistant", content=response))
@@ -166,10 +178,9 @@ class MegaAgent:
         Returns:
             A clarifying question
         """
-        # Get a client to make the request
-        client = self.sub_agents[next(iter(self.sub_agents))].llm.client
-        model = self.sub_agents[next(iter(self.sub_agents))].llm.model
+        # Get temperature from the main config
         temperature = self.sub_agents[next(iter(self.sub_agents))].llm.temperature
+        model_name = f"google-gla:{self.sub_agents[next(iter(self.sub_agents))].llm.model}"
         
         # Format chat history for context
         formatted_history = self._format_chat_history()
@@ -182,16 +193,15 @@ class MegaAgent:
         )
         
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that asks clarifying questions to understand user needs."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temperature,
+            # Create a dedicated agent with the proper system prompt for clarification
+            clarification_agent = Agent(
+                model_name,
+                system_prompt=CLARIFICATION_SYSTEM_PROMPT
             )
             
-            return response.choices[0].message.content
+            result = await clarification_agent.run(prompt, temperature=temperature)
+            
+            return result.output
             
         except Exception as e:
             log.error(f"Error generating clarification question: {e}")
@@ -235,10 +245,25 @@ class MegaAgent:
             
         return "\n".join(formatted)
     
-    async def _lightweight_route_request(self, message: str) -> Dict[str, AgenticMCPAgent]:
+    def _format_chat_history_for_agent(self) -> List[Dict[str, str]]:
         """
-        Use a lightweight approach to route requests based only on integration descriptions.
-        This avoids sending all tool details to the LLM for routing.
+        Format chat history for passing to sub-agents.
+        
+        Returns:
+            Chat history in the format expected by AgenticMCPAgent
+        """
+        # Transform ChatMessage objects to the dict format expected by AgenticMCPAgent
+        formatted_history = []
+        for msg in self.chat_history:
+            formatted_history.append({
+                "role": msg.role,
+                "content": msg.content
+            })
+        return formatted_history
+    
+    async def _identify_relevant_agents(self, message: str) -> Dict[str, AgenticMCPAgent]:
+        """
+        Identify which specialized agents are relevant to the user's request.
         
         Args:
             message: User message
@@ -248,7 +273,7 @@ class MegaAgent:
         """
         # If we have no server descriptions or no sub-agents, we can't route
         if not self.server_descriptions or not self.sub_agents:
-            log.info("Cannot perform lightweight routing: missing server descriptions or sub-agents")
+            log.info("Cannot identify relevant agents: missing server descriptions or sub-agents")
             return {}
             
         # Get chat history for context
@@ -261,26 +286,27 @@ class MegaAgent:
             integrations_descriptions=self._format_integration_descriptions()
         )
         
-        # Use the LLM from the main config
-        client = self.sub_agents[next(iter(self.sub_agents))].llm.client
-        model = self.sub_agents[next(iter(self.sub_agents))].llm.model
+        # Get config from the first sub-agent
         temperature = self.sub_agents[next(iter(self.sub_agents))].llm.temperature
+        model_name = f"google-gla:{self.sub_agents[next(iter(self.sub_agents))].llm.model}"
         
         try:
-            log.info("Performing lightweight routing based on integration descriptions")
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are a helpful AI assistant that routes requests to the appropriate integrations."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temperature,
+            log.info("Identifying relevant agents based on integration descriptions")
+            
+            # Create a dedicated agent with the proper system prompt for routing
+            routing_agent = Agent(
+                model_name,
+                system_prompt=ROUTING_SYSTEM_PROMPT
             )
             
-            response_text = response.choices[0].message.content
+            result = await routing_agent.run(prompt, temperature=temperature)
             
-            # Clean response from code blocks
-            response_text = self._clean_json_response(response_text)
+            response_text = result.output
+            
+            # Clean response from code blocks - use the first sub-agent's LLM method
+            # since it has the same functionality
+            first_agent = next(iter(self.sub_agents.values()))
+            response_text = first_agent.llm._clean_json_response(response_text)
             log.debug(f"Routing response: {response_text}")
             
             # Parse JSON response
@@ -289,7 +315,7 @@ class MegaAgent:
             integrations = response_data.get("integrations", [])
             reasoning = response_data.get("reasoning", "No reasoning provided")
             
-            log.info(f"Lightweight routing reasoning: {reasoning}")
+            log.info(f"Routing reasoning: {reasoning}")
             log.info(f"Selected integrations: {integrations}")
             
             # Map integrations to agents
@@ -304,7 +330,7 @@ class MegaAgent:
             return relevant_agents
             
         except Exception as e:
-            log.error(f"Error in lightweight routing: {e}")
+            log.error(f"Error identifying relevant agents: {e}")
             return {}
     
     def _format_integration_descriptions(self) -> str:
@@ -328,25 +354,6 @@ class MegaAgent:
         
         return "\n".join(formatted_descriptions)
     
-    def _clean_json_response(self, response: str) -> str:
-        """
-        Clean JSON response to remove markdown code blocks and other formatting.
-        
-        Args:
-            response: Raw response from LLM
-            
-        Returns:
-            Cleaned JSON string
-        """
-        # Remove markdown code blocks (```json ... ```)
-        pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
-        match = re.search(pattern, response)
-        if match:
-            return match.group(1).strip()
-        
-        # If no code blocks, just return the original (it might be clean already)
-        return response.strip()
-    
     async def _coordinate_multi_agent_response(self, message: str, relevant_agents: Dict[str, AgenticMCPAgent]) -> str:
         """
         Coordinate responses from multiple sub-agents for a complex request.
@@ -361,12 +368,18 @@ class MegaAgent:
         agent_types = list(relevant_agents.keys())
         log.info(f"🔄 Coordinating responses from {len(relevant_agents)} agents: {', '.join(agent_types)}")
         
+        # Format chat history for sub-agents
+        formatted_chat_history = self._format_chat_history_for_agent()
+        
         # Get responses from each relevant agent
         agent_responses = {}
         for agent_type, agent in relevant_agents.items():
             try:
                 log.info(f"🔹 Getting response from {agent_type} agent")
-                response = await agent.chat(message)
+                
+                # Pass the chat history to each sub-agent
+                response = await agent.chat(message, chat_history=formatted_chat_history)
+                
                 agent_responses[agent_type] = response
                 log.debug(f"Response from {agent_type} agent: {response[:100]}...")
             except Exception as e:
@@ -389,7 +402,7 @@ class MegaAgent:
             message,
             f"This request required coordinating between multiple specialized agents: {', '.join(relevant_agents.keys())}",
             combined_response,
-            chat_history=self.chat_history
+            chat_history=self._format_chat_history_for_agent()
         )
         
         return final_response

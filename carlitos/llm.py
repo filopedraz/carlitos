@@ -5,41 +5,49 @@ import re
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 
-from langfuse.openai import openai
+from pydantic_ai import Agent
 from mcp import Tool
 
-from carlitos.config import LLMConfig
-from carlitos.prompt import TASK_ANALYSIS_PROMPT, SYNTHESIS_PROMPT, TOOL_SELECTION_PROMPT
+from carlitos.prompt import (
+    TASK_ANALYSIS_PROMPT, 
+    SYNTHESIS_PROMPT, 
+    CARLITOS_SYSTEM_PROMPT,
+    TASK_ANALYSIS_SYSTEM_PROMPT
+)
 
 log = logging.getLogger("carlitos.llm")
 
 
-class AgenticLLMToolSelector:
+class LLMCoreAgent:
     """
-    An agentic LLM tool selector that supports deliberate thinking 
-    about tasks and tools to use.
+    Core agent for Carlitos that handles LLM interactions.
+    Manages system prompts, task analysis, tool selection and result synthesis.
+    Uses PydanticAI with Gemini model as the underlying implementation.
     """
     
-    def __init__(self, llm_config: LLMConfig):
+    def __init__(self, llm_config: Dict[str, Any]):
         """
         Initialize LLM client based on config.
         
         Args:
-            llm_config: LLM configuration
+            llm_config: LLM configuration dictionary
         """
         self.config = llm_config
-        self.provider = "openai"  # Only support OpenAI
-        self.model = llm_config.model
-        self.temperature = llm_config.temperature
+        self.model = llm_config["model"]
+        self.temperature = llm_config["temperature"]
         
         # Set API key from environment
-        api_key = os.environ.get(llm_config.api_key_env)
-        if not api_key:
-            raise ValueError(f"API key not found in environment variable {llm_config.api_key_env}")
+        os.environ["GEMINI_API_KEY"] = os.environ.get(llm_config["api_key_env"], "")
+        if not os.environ["GEMINI_API_KEY"]:
+            raise ValueError(f"API key not found in environment variable {llm_config['api_key_env']}")
         
-        # Initialize OpenAI client
-        self.client = openai.OpenAI(api_key=api_key)
-        log.debug(f"Initialized OpenAI client with model {self.model}")
+        # Initialize PydanticAI Agent
+        model_name = f"google-gla:{self.model}"
+        self.client = Agent(
+            model_name,
+            system_prompt=CARLITOS_SYSTEM_PROMPT
+        )
+        log.debug(f"Initialized PydanticAI Agent with model {model_name}")
     
     def _clean_json_response(self, response: str) -> str:
         """
@@ -59,55 +67,6 @@ class AgenticLLMToolSelector:
         
         # If no code blocks, just return the original (it might be clean already)
         return response.strip()
-    
-    async def select_tool(self, query: str, available_tools: List[Tool]) -> Tuple[Optional[str], Dict[str, Any], str]:
-        """
-        Prompt LLM to select appropriate tool and parameters.
-        
-        Args:
-            query: User query
-            available_tools: List of available tools
-            
-        Returns:
-            Tuple of (tool_name, parameters, reasoning)
-            If tool_name is None, LLM decided no tool is needed
-        """
-        # Do not filter tools, use all available tools
-        log.debug(f"Using all {len(available_tools)} tools without filtering")
-        
-        # Create prompt for tool selection
-        prompt = self._get_tool_selection_prompt(query, available_tools)
-        
-        log.debug(f"Sending prompt to OpenAI")
-        
-        try:
-            # Get response from OpenAI
-            response = self._get_openai_response(prompt)
-            
-            # Clean response from code blocks  
-            cleaned_response = self._clean_json_response(response)
-            
-            # Parse JSON response
-            response_data = json.loads(cleaned_response)
-            
-            tool_name = response_data.get("tool")
-            parameters = response_data.get("parameters", {})
-            reasoning = response_data.get("reasoning", "No reasoning provided")
-            
-            # If tool is NONE, return None for tool name
-            if tool_name == "NONE":
-                tool_name = None
-                
-            log.debug(f"Selected tool: {tool_name}, Parameters: {parameters}")
-            return tool_name, parameters, reasoning
-            
-        except json.JSONDecodeError as e:
-            log.error(f"Failed to parse JSON from LLM response: {e}")
-            log.error(f"Raw response: {response}")
-            raise ValueError("LLM returned invalid JSON response")
-        except Exception as e:
-            log.error(f"Error getting tool selection from LLM: {e}")
-            raise
     
     async def analyze_task(self, query: str, available_tools: List[Tool], chat_history: List[Dict[str, str]] = None, detailed_server_info: Dict[str, str] = None) -> Tuple[str, List[Dict[str, Any]]]:
         """
@@ -141,11 +100,16 @@ class AgenticLLMToolSelector:
             chat_history_formatted
         )
         
-        log.debug(f"Sending task analysis prompt to OpenAI")
+        log.debug(f"Sending task analysis prompt to PydanticAI")
         
         try:
-            # Get response from OpenAI
-            response = self._get_openai_response(prompt)
+            # Get response from PydanticAI
+            agent_for_task = Agent(
+                f"google-gla:{self.model}",
+                system_prompt=TASK_ANALYSIS_SYSTEM_PROMPT
+            )
+            result = await agent_for_task.run(prompt, temperature=self.temperature)
+            response = result.output
             
             # Clean response from code blocks
             cleaned_response = self._clean_json_response(response)
@@ -204,11 +168,16 @@ class AgenticLLMToolSelector:
             current_datetime=current_datetime
         )
         
-        log.debug(f"Sending synthesis prompt to OpenAI with {len(tool_results)} chars of tool results")
+        log.debug(f"Sending synthesis prompt to PydanticAI with {len(tool_results)} chars of tool results")
         
         try:
-            # Get response from OpenAI
-            response = self._get_openai_synthesis_response(prompt)
+            # Get response from PydanticAI
+            agent_for_synthesis = Agent(
+                f"google-gla:{self.model}",
+                system_prompt=CARLITOS_SYSTEM_PROMPT
+            )
+            result = await agent_for_synthesis.run(prompt, temperature=self.temperature)
+            response = result.output
             
             return response
             
@@ -216,52 +185,6 @@ class AgenticLLMToolSelector:
             log.error(f"Error in result synthesis: {e}")
             # Fallback response
             return f"I've processed your request, but encountered an error when formatting the results: {str(e)}. Here's the raw data: {tool_results}"
-    
-    def _get_openai_response(self, prompt: str) -> str:
-        """
-        Get response from OpenAI.
-        
-        Args:
-            prompt: The prompt to send
-            
-        Returns:
-            Response text
-        """
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant that analyzes tasks and selects appropriate tools to execute them."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=self.temperature,
-        )
-        
-        return response.choices[0].message.content
-    
-    def _get_tool_selection_prompt(self, query: str, available_tools: List[Tool]) -> str:
-        """
-        Create prompt for tool selection.
-        
-        Args:
-            query: User query
-            available_tools: List of available tools
-            
-        Returns:
-            Formatted prompt string
-        """
-        tools_description = "\n".join([
-            f"- Name: {tool.name}\n  Description: {tool.description}\n  Parameters: {json.dumps(tool.inputSchema)}"
-            for tool in available_tools
-        ])
-        
-        # Include current date and time
-        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        return TOOL_SELECTION_PROMPT.format(
-            tools_description=tools_description,
-            query=query,
-            current_datetime=current_datetime
-        )
     
     def _get_task_analysis_prompt(self, query: str, available_tools: List[Tool], detailed_server_info: Dict[str, str] = None, chat_history_formatted: str = "") -> str:
         """
@@ -295,27 +218,6 @@ class AgenticLLMToolSelector:
             chat_history_formatted=chat_history_formatted,
             current_datetime=current_datetime
         )
-    
-    def _get_openai_synthesis_response(self, prompt: str) -> str:
-        """
-        Get synthesis response from OpenAI.
-        
-        Args:
-            prompt: The prompt to send
-            
-        Returns:
-            Response text
-        """
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant that synthesizes tool results to answer user queries."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=self.temperature,
-        )
-        
-        return response.choices[0].message.content
     
     def _format_tools(self, available_tools: List[Tool]) -> str:
         """
