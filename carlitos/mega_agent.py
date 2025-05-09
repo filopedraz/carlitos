@@ -171,7 +171,7 @@ class MegaAgent:
         self._current_agent_type = "clarification"
         
         # Get available integration descriptions for the clarification question
-        available_integrations = self._format_integration_descriptions_short()
+        available_integrations = self._format_integration_descriptions()
         
         # Use the routing agent to ask a clarification question
         clarification = await self.routing_agent.ask_clarification_question(
@@ -203,7 +203,7 @@ class MegaAgent:
             
         return "\n\n".join(formatted)
     
-    def _format_integration_descriptions_short(self) -> str:
+    def _format_integration_descriptions(self) -> str:
         """
         Format integration descriptions in a short format for clarification questions.
         
