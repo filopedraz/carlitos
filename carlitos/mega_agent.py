@@ -1,19 +1,11 @@
 import logging
-import json
 from typing import Dict, NamedTuple, Any, List
 
-from pydantic_ai import Agent
-
 from carlitos.agent import AgenticMCPAgent
-from carlitos.config import DEFAULT_LLM_CONFIG
-from carlitos.prompt import (
-    CLARIFICATION_QUESTION_PROMPT, 
-    ROUTING_PROMPT, 
-    CLARIFICATION_SYSTEM_PROMPT, 
-    ROUTING_SYSTEM_PROMPT
-)
+from carlitos.routing import RoutingAgent
+from carlitos.config import DEFAULT_LLM_CONFIG, ROUTING_LLM_CONFIG
 
-log = logging.getLogger("carlitos.mega_agent")
+logger = logging.getLogger("carlitos.mega_agent")
 
 
 class ChatMessage(NamedTuple):
@@ -53,7 +45,11 @@ class MegaAgent:
                 integration_type = self._get_integration_type(server["name"])
                 self.integration_types.add(integration_type)
         
-        log.debug(f"Initialized MegaAgent with {len(config['servers'])} potential servers")
+        # Initialize the routing agent
+        routing_config = config.get("routing", ROUTING_LLM_CONFIG)
+        self.routing_agent = RoutingAgent(routing_config, self.server_descriptions)
+        
+        logger.debug(f"Initialized MegaAgent with {len(config['servers'])} potential servers")
     
     async def initialize_sub_agents(self):
         """
@@ -79,9 +75,9 @@ class MegaAgent:
             
             # Create the sub-agent
             self.sub_agents[integration_type] = AgenticMCPAgent(filtered_config)
-            log.debug(f"Created sub-agent for {integration_type} with {len(servers)} servers")
+            logger.debug(f"Created sub-agent for {integration_type} with {len(servers)} servers")
         
-        log.info(f"Initialized {len(self.sub_agents)} sub-agents: {', '.join(self.sub_agents.keys())}")
+        logger.info(f"Initialized {len(self.sub_agents)} sub-agents: {', '.join(self.sub_agents.keys())}")
     
     def _get_integration_type(self, server_name: str) -> str:
         """
@@ -108,7 +104,7 @@ class MegaAgent:
         Returns:
             Agent response
         """
-        log.info(f"Processing chat message through MegaAgent: {message}")
+        logger.info(f"Processing chat message through MegaAgent: {message}")
         
         # Add user message to chat history
         self.chat_history.append(ChatMessage(role="user", content=message))
@@ -117,20 +113,37 @@ class MegaAgent:
         if not self.sub_agents:
             await self.initialize_sub_agents()
         
-        # Use lightweight routing based on integration descriptions
-        relevant_agents = await self._identify_relevant_agents(message)
+        # Get chat history for context
+        formatted_history = self._format_chat_history()
+        
+        # Use the routing agent to identify relevant agents
+        routing_result = await self.routing_agent.identify_relevant_agents(
+            message, 
+            list(self.integration_types),
+            formatted_history
+        )
+        
+        # Get relevant agent types from the routing result
+        relevant_agent_types = routing_result["integrations"]
+        
+        # Map agent types to actual agent instances
+        relevant_agents = {}
+        for agent_type in relevant_agent_types:
+            if agent_type in self.sub_agents:
+                relevant_agents[agent_type] = self.sub_agents[agent_type]
+                logger.info(f"✅ Selected integration '{agent_type}' for routing")
         
         # If we have specific agents identified, use them
         if relevant_agents:
             agent_types = list(relevant_agents.keys())
-            log.info(f"🔍 Routing decision: Using {len(relevant_agents)} specialized agent(s): {', '.join(agent_types)}")
+            logger.info(f"🔍 Routing decision: Using {len(relevant_agents)} specialized agent(s): {', '.join(agent_types)}")
             
             # If we have a single relevant agent, use it directly
             if len(relevant_agents) == 1:
                 agent_type = agent_types[0]
                 agent = relevant_agents[agent_type]
                 self._current_agent_type = agent_type
-                log.info(f"🎯 Activated agent: {agent_type}")
+                logger.info(f"🎯 Activated agent: {agent_type}")
                 
                 # Convert chat history to the format expected by AgenticMCPAgent
                 formatted_chat_history = self._format_chat_history_for_agent()
@@ -144,7 +157,7 @@ class MegaAgent:
                 return response
             
             # If we have multiple relevant agents, coordinate between them
-            log.info(f"🔄 Coordination required between {len(relevant_agents)} agents: {', '.join(agent_types)}")
+            logger.info(f"🔄 Coordination required between {len(relevant_agents)} agents: {', '.join(agent_types)}")
             self._current_agent_type = f"coordinator({','.join(agent_types)})"
             response = await self._coordinate_multi_agent_response(message, relevant_agents)
             
@@ -154,57 +167,23 @@ class MegaAgent:
             return response
         
         # If we couldn't determine relevant agents, ask a clarifying question
-        log.info("❓ Cannot determine the appropriate agent, asking a clarifying question")
+        logger.info("❓ Cannot determine the appropriate agent, asking a clarifying question")
         self._current_agent_type = "clarification"
         
         # Get available integration descriptions for the clarification question
         available_integrations = self._format_integration_descriptions_short()
-        clarification = await self._ask_clarification_question(message, available_integrations)
+        
+        # Use the routing agent to ask a clarification question
+        clarification = await self.routing_agent.ask_clarification_question(
+            message, 
+            formatted_history, 
+            available_integrations
+        )
         
         # Add clarification to chat history
         self.chat_history.append(ChatMessage(role="assistant", content=clarification))
         
         return clarification
-    
-    async def _ask_clarification_question(self, message: str, available_integrations: str) -> str:
-        """
-        Ask a clarifying question when the intent is unclear.
-        
-        Args:
-            message: The user's message
-            available_integrations: Short descriptions of available integrations
-            
-        Returns:
-            A clarifying question
-        """
-        # Get temperature from the main config
-        temperature = self.sub_agents[next(iter(self.sub_agents))].llm.temperature
-        model_name = f"google-gla:{self.sub_agents[next(iter(self.sub_agents))].llm.model}"
-        
-        # Format chat history for context
-        formatted_history = self._format_chat_history()
-        
-        # Create the prompt using the constant from prompt.py
-        prompt = CLARIFICATION_QUESTION_PROMPT.format(
-            formatted_history=formatted_history,
-            message=message,
-            available_integrations=available_integrations
-        )
-        
-        try:
-            # Create a dedicated agent with the proper system prompt for clarification
-            clarification_agent = Agent(
-                model_name,
-                system_prompt=CLARIFICATION_SYSTEM_PROMPT
-            )
-            
-            result = await clarification_agent.run(prompt, temperature=temperature)
-            
-            return result.output
-            
-        except Exception as e:
-            log.error(f"Error generating clarification question: {e}")
-            return "I'm not sure what you're asking for. Could you provide more details about what you'd like to do? For example, are you looking to check your calendar, email, or something else?"
     
     def _format_chat_history(self) -> str:
         """
@@ -260,99 +239,6 @@ class MegaAgent:
             })
         return formatted_history
     
-    async def _identify_relevant_agents(self, message: str) -> Dict[str, AgenticMCPAgent]:
-        """
-        Identify which specialized agents are relevant to the user's request.
-        
-        Args:
-            message: User message
-            
-        Returns:
-            Dictionary of integration types to sub-agents
-        """
-        # If we have no server descriptions or no sub-agents, we can't route
-        if not self.server_descriptions or not self.sub_agents:
-            log.info("Cannot identify relevant agents: missing server descriptions or sub-agents")
-            return {}
-            
-        # Get chat history for context
-        formatted_history = self._format_chat_history()
-            
-        # Create the prompt using the constant from prompt.py with matching parameter names
-        prompt = ROUTING_PROMPT.format(
-            formatted_history=formatted_history,
-            message=message,
-            integrations_descriptions=self._format_integration_descriptions()
-        )
-        
-        # Get config from the first sub-agent
-        temperature = self.sub_agents[next(iter(self.sub_agents))].llm.temperature
-        model_name = f"google-gla:{self.sub_agents[next(iter(self.sub_agents))].llm.model}"
-        
-        try:
-            log.info("Identifying relevant agents based on integration descriptions")
-            
-            # Create a dedicated agent with the proper system prompt for routing
-            routing_agent = Agent(
-                model_name,
-                system_prompt=ROUTING_SYSTEM_PROMPT
-            )
-            
-            result = await routing_agent.run(prompt, temperature=temperature)
-            
-            response_text = result.output
-            
-            # Clean response from code blocks - use the first sub-agent's LLM method
-            # since it has the same functionality
-            first_agent = next(iter(self.sub_agents.values()))
-            response_text = first_agent.llm._clean_json_response(response_text)
-            log.debug(f"Routing response: {response_text}")
-            
-            # Parse JSON response
-            response_data = json.loads(response_text)
-            
-            integrations = response_data.get("integrations", [])
-            reasoning = response_data.get("reasoning", "No reasoning provided")
-            
-            log.info(f"Routing reasoning: {reasoning}")
-            log.info(f"Selected integrations: {integrations}")
-            
-            # Map integrations to agents
-            relevant_agents = {}
-            for integration in integrations:
-                if integration in self.sub_agents:
-                    relevant_agents[integration] = self.sub_agents[integration]
-                    log.info(f"✅ Selected integration '{integration}' for routing")
-                else:
-                    log.warning(f"⚠️ Integration '{integration}' selected by router but no matching sub-agent found")
-            
-            return relevant_agents
-            
-        except Exception as e:
-            log.error(f"Error identifying relevant agents: {e}")
-            return {}
-    
-    def _format_integration_descriptions(self) -> str:
-        """
-        Format integration descriptions for the routing prompt.
-        
-        Returns:
-            Formatted integration descriptions string
-        """
-        # Group descriptions by integration type
-        integration_descriptions = {}
-        
-        for server_name, description in self.server_descriptions.items():
-            integration_type = self._get_integration_type(server_name)
-            integration_descriptions[integration_type] = description
-        
-        # Format the descriptions
-        formatted_descriptions = []
-        for integration_type, description in integration_descriptions.items():
-            formatted_descriptions.append(f"- {integration_type}: {description}")
-        
-        return "\n".join(formatted_descriptions)
-    
     async def _coordinate_multi_agent_response(self, message: str, relevant_agents: Dict[str, AgenticMCPAgent]) -> str:
         """
         Coordinate responses from multiple sub-agents for a complex request.
@@ -365,7 +251,7 @@ class MegaAgent:
             Coordinated response
         """
         agent_types = list(relevant_agents.keys())
-        log.info(f"🔄 Coordinating responses from {len(relevant_agents)} agents: {', '.join(agent_types)}")
+        logger.info(f"🔄 Coordinating responses from {len(relevant_agents)} agents: {', '.join(agent_types)}")
         
         # Format chat history for sub-agents
         formatted_chat_history = self._format_chat_history_for_agent()
@@ -374,15 +260,15 @@ class MegaAgent:
         agent_responses = {}
         for agent_type, agent in relevant_agents.items():
             try:
-                log.info(f"🔹 Getting response from {agent_type} agent")
+                logger.info(f"🔹 Getting response from {agent_type} agent")
                 
                 # Pass the chat history to each sub-agent
                 response = await agent.chat(message, chat_history=formatted_chat_history)
                 
                 agent_responses[agent_type] = response
-                log.debug(f"Response from {agent_type} agent: {response[:100]}...")
+                logger.debug(f"Response from {agent_type} agent: {response[:100]}...")
             except Exception as e:
-                log.error(f"❌ Error getting response from {agent_type} agent: {e}")
+                logger.error(f"❌ Error getting response from {agent_type} agent: {e}")
                 agent_responses[agent_type] = f"Error: {str(e)}"
         
         # Use the first agent's LLM to synthesize a response
@@ -394,7 +280,7 @@ class MegaAgent:
             for agent_type, response in agent_responses.items()
         ])
         
-        log.info(f"🔄 Synthesizing final response from {len(agent_responses)} sub-agent responses")
+        logger.info(f"🔄 Synthesizing final response from {len(agent_responses)} sub-agent responses")
         
         # Synthesize the final response
         final_response = await first_agent.llm.synthesize_results(

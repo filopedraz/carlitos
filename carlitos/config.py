@@ -1,6 +1,8 @@
 import os
 import logging
+import base64
 from pathlib import Path
+import logfire
 
 from dotenv import load_dotenv
 from rich.logging import RichHandler
@@ -35,12 +37,40 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-2.5-flash-preview-04-17")
 LLM_API_KEY_ENV = os.environ.get("LLM_API_KEY_ENV", "GEMINI_API_KEY")
 LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
 
-# Langfuse configuration (for Pydantic AI integration)
+# Routing configuration
+# ------------------------------------------------------------------------------
+ROUTING_MODEL = os.environ.get("ROUTING_MODEL", "gemini-2.0-flash")
+ROUTING_TEMPERATURE = float(os.environ.get("ROUTING_TEMPERATURE", "0.1"))
+
+# Instrumentation configuration
+# ------------------------------------------------------------------------------
+LOGFIRE_ENABLED = os.environ.get("LOGFIRE_ENABLED", "False").lower() in ("true", "1", "t")
+
+# Langfuse configuration
 # ------------------------------------------------------------------------------
 LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY")
 LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY")
 LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST")
 LANGFUSE_SERVICE_NAME = os.environ.get("LANGFUSE_SERVICE_NAME", "Carlitos")
+
+# Initialize Langfuse and Logfire once at startup
+# ------------------------------------------------------------------------------
+# Configure logfire
+logfire.configure(
+    service_name=LANGFUSE_SERVICE_NAME,
+    send_to_logfire=LOGFIRE_ENABLED,  # Only send to Logfire if explicitly enabled
+)
+logger.info(f"Configured Logfire with service name: {LANGFUSE_SERVICE_NAME} (send_to_logfire={LOGFIRE_ENABLED})")
+
+# Configure Langfuse if credentials are available
+if LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY and LANGFUSE_HOST:
+    logger.info("Configuring Langfuse integration via OpenTelemetry (once for the application)")
+    langfuse_auth = base64.b64encode(f"{LANGFUSE_PUBLIC_KEY}:{LANGFUSE_SECRET_KEY}".encode()).decode()
+    os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"{LANGFUSE_HOST.rstrip('/')}/api/public/otel"
+    os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = f"Authorization=Basic {langfuse_auth}"
+    logger.info(f"Langfuse service name set to: {LANGFUSE_SERVICE_NAME}")
+else:
+    logger.info("Langfuse credentials not found. Telemetry will be collected but not sent to Langfuse.")
 
 # Load and standardize server configurations
 # ------------------------------------------------------------------------------
@@ -52,16 +82,22 @@ DEFAULT_LLM_CONFIG = {
     "provider": LLM_PROVIDER,
     "model": LLM_MODEL,
     "api_key_env": LLM_API_KEY_ENV,
-    "temperature": LLM_TEMPERATURE,
-    "langfuse_public_key": LANGFUSE_PUBLIC_KEY,
-    "langfuse_secret_key": LANGFUSE_SECRET_KEY,
-    "langfuse_host": LANGFUSE_HOST,
-    "langfuse_service_name": LANGFUSE_SERVICE_NAME
+    "temperature": LLM_TEMPERATURE
+}
+
+# Create routing LLM config
+# ------------------------------------------------------------------------------
+ROUTING_LLM_CONFIG = {
+    "provider": LLM_PROVIDER,
+    "model": ROUTING_MODEL,
+    "api_key_env": LLM_API_KEY_ENV,
+    "temperature": ROUTING_TEMPERATURE
 }
 
 # Create default Carlitos config
 # ------------------------------------------------------------------------------
 DEFAULT_CONFIG = {
     "servers": SERVERS,
-    "llm": DEFAULT_LLM_CONFIG
+    "llm": DEFAULT_LLM_CONFIG,
+    "routing": ROUTING_LLM_CONFIG
 } 

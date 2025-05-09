@@ -4,8 +4,6 @@ import os
 import re
 from typing import Dict, List, Any, Tuple
 from datetime import datetime
-import base64
-import logfire
 
 from pydantic_ai import Agent
 from mcp import Tool
@@ -42,34 +40,13 @@ class LLMCoreAgent:
         os.environ["GEMINI_API_KEY"] = os.environ.get(llm_config["api_key_env"], "")
         if not os.environ["GEMINI_API_KEY"]:
             raise ValueError(f"API key not found in environment variable {llm_config['api_key_env']}")
-        
-        # Configure Langfuse and Logfire if keys are provided
-        langfuse_public_key = llm_config.get("langfuse_public_key")
-        langfuse_secret_key = llm_config.get("langfuse_secret_key")
-        langfuse_host = llm_config.get("langfuse_host") # e.g., "https://cloud.langfuse.com" or "https://us.cloud.langfuse.com"
-
-        if langfuse_public_key and langfuse_secret_key and langfuse_host:
-            logger.info("Configuring Langfuse integration via Logfire and OpenTelemetry.")
-            langfuse_auth = base64.b64encode(f"{langfuse_public_key}:{langfuse_secret_key}".encode()).decode()
-            os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"{langfuse_host.rstrip('/')}/api/public/otel"
-            os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = f"Authorization=Basic {langfuse_auth}"
-            
-            logfire.configure(
-                service_name=llm_config.get("langfuse_service_name", "carlitos"),
-                send_to_logfire=False, # Send only to OTEL endpoint (Langfuse)
-            )
-            self.langfuse_enabled = True
-            logger.debug(f"Langfuse configured with service name: {llm_config.get('langfuse_service_name', 'carlitos')} and host: {langfuse_host}")
-        else:
-            self.langfuse_enabled = False
-            logger.info("Langfuse environment variables not fully set. Langfuse integration will be disabled.")
 
         # Initialize PydanticAI Agent
         model_name = f"google-gla:{self.model}"
         self.client = Agent(
             model_name,
             system_prompt=CARLITOS_SYSTEM_PROMPT,
-            instrument=self.langfuse_enabled # Instrument if Langfuse is enabled
+            instrument=True
         )
         logger.debug(f"Initialized PydanticAI Agent with model {model_name}")
     
@@ -105,9 +82,6 @@ class LLMCoreAgent:
         Returns:
             Tuple of (thinking result, list of needed tools)
         """
-        # Format tools for the prompt
-        tools_formatted = self._format_tools(available_tools)
-        
         # Format chat history if provided
         chat_history_formatted = ""
         if chat_history:
@@ -124,14 +98,12 @@ class LLMCoreAgent:
             chat_history_formatted
         )
         
-        logger.debug(f"Sending task analysis prompt to PydanticAI")
-        
         try:
             # Get response from PydanticAI
             agent_for_task = Agent(
                 f"google-gla:{self.model}",
                 system_prompt=TASK_ANALYSIS_SYSTEM_PROMPT,
-                instrument=self.langfuse_enabled # Instrument if Langfuse is enabled
+                instrument=True
             )
             result = await agent_for_task.run(prompt, temperature=self.temperature)
             response = result.output
@@ -200,7 +172,7 @@ class LLMCoreAgent:
             agent_for_synthesis = Agent(
                 f"google-gla:{self.model}",
                 system_prompt=CARLITOS_SYSTEM_PROMPT,
-                instrument=self.langfuse_enabled # Instrument if Langfuse is enabled
+                instrument=True
             )
             result = await agent_for_synthesis.run(prompt, temperature=self.temperature)
             response = result.output
