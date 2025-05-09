@@ -44,14 +44,6 @@ LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.2"))
 ROUTING_MODEL = os.environ.get("ROUTING_MODEL", "gemini-2.0-flash")
 ROUTING_TEMPERATURE = float(os.environ.get("ROUTING_TEMPERATURE", "0.1"))
 
-# Instrumentation configuration
-# ------------------------------------------------------------------------------
-LOGFIRE_ENABLED = os.environ.get("LOGFIRE_ENABLED", "False").lower() in (
-    "true",
-    "1",
-    "t",
-)
-
 # Langfuse configuration
 # ------------------------------------------------------------------------------
 LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY")
@@ -59,34 +51,38 @@ LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY")
 LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST")
 LANGFUSE_SERVICE_NAME = os.environ.get("LANGFUSE_SERVICE_NAME", "Carlitos")
 
-# Initialize Langfuse and Logfire once at startup
-# ------------------------------------------------------------------------------
-# Configure logfire
-logfire.configure(
-    service_name=LANGFUSE_SERVICE_NAME,
-    send_to_logfire=LOGFIRE_ENABLED,  # Only send to Logfire if explicitly enabled
-)
-logger.info(
-    f"Configured Logfire with service name: {LANGFUSE_SERVICE_NAME} (send_to_logfire={LOGFIRE_ENABLED})"
-)
 
-# Configure Langfuse if credentials are available
-if LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY and LANGFUSE_HOST:
-    logger.info(
-        "Configuring Langfuse integration via OpenTelemetry (once for the application)"
-    )
-    langfuse_auth = base64.b64encode(
-        f"{LANGFUSE_PUBLIC_KEY}:{LANGFUSE_SECRET_KEY}".encode()
-    ).decode()
-    os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = (
-        f"{LANGFUSE_HOST.rstrip('/')}/api/public/otel"
-    )
-    os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = f"Authorization=Basic {langfuse_auth}"
-    logger.info(f"Langfuse service name set to: {LANGFUSE_SERVICE_NAME}")
-else:
-    logger.info(
-        "Langfuse credentials not found. Telemetry will be collected but not sent to Langfuse."
-    )
+def initialize_telemetry():
+    """
+    Ensure OpenTelemetry is properly initialized for Langfuse integration.
+    This function can be called from any context where telemetry is needed.
+    """
+    # Check if environment variables exist for Langfuse
+    if not (LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY and LANGFUSE_HOST):
+        logger.warning("Langfuse credentials not fully configured, tracing disabled")
+        return
+
+    try:
+        # Configure logfire
+        logfire.configure(
+            service_name=LANGFUSE_SERVICE_NAME,
+            send_to_logfire=False,
+        )
+
+        # Set up the environment variables for OpenTelemetry
+        langfuse_auth = base64.b64encode(
+            f"{LANGFUSE_PUBLIC_KEY}:{LANGFUSE_SECRET_KEY}".encode()
+        ).decode()
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = (
+            f"{LANGFUSE_HOST.rstrip('/')}/api/public/otel"
+        )
+        os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = (
+            f"Authorization=Basic {langfuse_auth}"
+        )
+        logger.info("OpenTelemetry trace provider successfully initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize OpenTelemetry trace provider: {e}")
+
 
 # Load and standardize server configurations
 # ------------------------------------------------------------------------------
