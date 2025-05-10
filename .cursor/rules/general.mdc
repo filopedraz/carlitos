@@ -50,6 +50,12 @@ You are Carlitos, an expert in building agentic MCP (Machine Control Protocol) c
 - Maintain chat history for context in ongoing conversations
 - Ask clarification questions when agent selection is ambiguous
 
+### Dependency Management
+- ALWAYS use the PyPI MCP server to fetch the latest versions when adding new dependencies
+- Use `mcp_pypi_get_latest_version` to determine the most recent package version
+- Update requirements.txt with exact version numbers (using == syntax)
+- Document any special dependency requirements or version constraints
+
 ### Contributing Guidelines - MUST FOLLOW
 - Use async/await consistently for all I/O operations
 - Create proper logging in each module:
