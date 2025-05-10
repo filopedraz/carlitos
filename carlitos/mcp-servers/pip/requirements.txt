@@ -8,4 +8,4 @@ httpx==0.28.1
 mcp==1.7.1
 watchdog==6.0.0
 fastmcp==2.2.10
-aiohttp==3.9.5
+aiohttp==3.11.0b0
