@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Tuple
 from mcp import Tool
 from pydantic_ai import Agent
 
+from carlitos.config import initialize_telemetry
 from carlitos.prompt import (
     CARLITOS_SYSTEM_PROMPT,
     SYNTHESIS_PROMPT,
@@ -42,6 +43,9 @@ class LLMCoreAgent:
             raise ValueError(
                 f"API key not found in environment variable {llm_config['api_key_env']}"
             )
+
+        # Ensure OpenTelemetry is properly initialized in this context
+        initialize_telemetry()
 
         # Initialize PydanticAI Agent
         model_name = f"google-gla:{self.model}"
