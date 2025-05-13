@@ -1,0 +1,37 @@
+services:
+  image:
+    build:
+      context: ./carlitos/mcp-servers/image
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./carlitos/mcp-servers/image:/app
+    restart: unless-stopped
+
+  memory:
+    build:
+      context: ./carlitos/mcp-servers/memory
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./carlitos/mcp-servers/memory:/app
+    restart: unless-stopped
+
+  pypi:
+    build:
+      context: ./carlitos/mcp-servers/pip
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./carlitos/mcp-servers/pip:/app
+    restart: unless-stopped
