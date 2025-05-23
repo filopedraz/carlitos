@@ -10,5 +10,5 @@ Pillow==11.2.1
 mem0ai==0.1.101
 pytest==8.3.5
 pytest-asyncio==0.26.0
-pytest-cov==5.0.0
+pytest-cov==6.1.1
 pre-commit==4.2.0
