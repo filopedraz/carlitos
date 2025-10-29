@@ -6,6 +6,6 @@ pydantic==2.11.4
 pillow==11.2.1
 httpx==0.28.1
 mcp==1.7.1
-fastmcp==2.2.10
+fastmcp==2.13.0
 watchdog==6.0.0
 flask==3.1.1
