@@ -1,4 +1,4 @@
-mcp==1.7.1
+mcp==1.23.0
 pydantic-ai[logfire]==0.2.6
 pydantic==2.11.5
 typer==0.15.4
