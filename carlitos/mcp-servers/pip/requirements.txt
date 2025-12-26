@@ -7,5 +7,5 @@ pillow==11.2.1
 httpx==0.28.1
 mcp==1.7.1
 watchdog==6.0.0
-fastmcp==2.2.10
+fastmcp==2.14.0
 aiohttp==3.11.0b0
